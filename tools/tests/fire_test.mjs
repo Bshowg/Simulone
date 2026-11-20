@@ -1,0 +1,24 @@
+import { World } from '../../engine/world.js';
+import { Sim } from '../../engine/sim.js';
+import { createSave } from '../../modules/save.js';
+import * as H from '../../games/lords-will/hamlet.js';
+const cfg = H.makeConfig({}, 7);
+const world = new World({ width: cfg.map.width, height: cfg.map.height, tiles: cfg.tiles, prefabs: cfg.prefabs, floor: cfg.floor });
+const sim = new Sim(world, cfg); cfg.map.build(world); sim.setCount(0); H.populate(sim);
+const R = H.rules, E = H.economy, P = H.progress, POL = H.policies;
+const seen = {}; R.onEvent = (k, r) => { if (k === 'fire') { seen[r.what] = (seen[r.what] ?? 0) + 1; console.log(`  tick ${sim.tick}: ${r.building.name}@${r.building.x},${r.building.y} ${r.what}`); } };
+for (let t = 0; t < 300; t++) sim.step();
+console.log('before charter: coin', E.town.coin, 'held', E.held('coin'), 'policies', POL.list().map(p => p.id).join(','));
+P.setLevel(3); for (let t = 0; t < 100; t++) sim.step();
+console.log('after charter: treasury', E.town.coin.toFixed(0), 'held', E.held('coin').toFixed(0), 'policies', POL.list().map(p => `${p.id}=${p.words}`).join(' | '));
+POL.set('wage', 9); POL.nudge('rations', -5); console.log('clamped:', POL.get('wage'), POL.get('rations'));
+const b0 = R.ignite(); console.log('ignited', b0.name, 'blocked', b0.blocked, JSON.stringify(b0.blockedBy), 'open', b0.open);
+const n0 = world.buildings.filter(Boolean).length;
+// save mid-fire and reload
+const saves = createSave({ version: 2 }), data = JSON.parse(JSON.stringify(saves.snapshot(sim)));
+for (let t = 0; t < H.hours(30); t++) sim.step();
+console.log('fires seen', JSON.stringify(seen), 'buildings', n0, '→', world.buildings.filter(Boolean).length, 'still burning', R.fires().length);
+const ok = saves.restore(sim, data);
+console.log('restored mid-fire:', ok, 'burning', R.fires().length, 'wage', POL.get('wage'), 'rations', POL.get('rations'), 'chartered', R.chartered, 'treasury', E.town.coin.toFixed(0));
+for (let t = 0; t < H.hours(30); t++) sim.step();
+console.log('after: burning', R.fires().length, 'people', sim.count, 'homeless', sim.count - sim.housed);

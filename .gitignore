@@ -1,0 +1,21 @@
+# Build output: made again by tools/build-artifact.py and tools/build-simulone.py (and by tools/test-all.py)
+dist/
+
+# Python and Node leftovers
+__pycache__/
+*.pyc
+node_modules/
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code: personal settings stay local (.claude/launch.json, the preview server list, is shared)
+.claude/settings.local.json
+
+# Aseprite's own backups
+*.aseprite~

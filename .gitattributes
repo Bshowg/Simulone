@@ -1,0 +1,14 @@
+# Text is kept with LF line endings in the repository, whatever the machine (the build tools write LF).
+* text=auto eol=lf
+
+# Pictures, sheets and fonts are binary: never touched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.aseprite binary
+*.ase binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

@@ -1,0 +1,228 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ant Nest</title>
+<style>
+  body { margin: 0; padding-block: 12px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+         background: #f4f2ea; color: #1c1f17; font: 13px/1.4 ui-monospace, Consolas, monospace; }
+  main { max-width: 520px; margin: 0 auto; }
+  canvas { width: 100%; display: block; border: 1px solid #1c1f17; image-rendering: pixelated; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+  button { font: inherit; padding: 8px 10px; border: 1px solid #1c1f17; background: transparent; color: #1c1f17; cursor: pointer; }
+  button.on { background: #1c1f17; color: #f4f2ea; }
+  button small { opacity: .7; }
+  [hidden] { display: none !important; }
+  .sw { display: inline-block; width: 9px; height: 9px; margin-right: 4px; border: 1px solid #1c1f17; }
+  #clock { font-size: 18px; min-width: 6em; font-variant-numeric: tabular-nums; }
+  #buildNote, .dim { color: #6f6a4f; }
+  p { margin: 6px 0; }
+  table { border-collapse: collapse; font: inherit; font-variant-numeric: tabular-nums; }
+  td, th { text-align: right; padding: 1px 10px 1px 0; font-weight: normal; white-space: nowrap; }
+  th { color: #6f6a4f; border-bottom: 1px solid #cfcab6; }
+  td:first-child, th:first-child { text-align: left; }
+  .tables { display: flex; flex-wrap: wrap; gap: 8px 28px; }
+  .scroll { overflow-x: auto; }
+  b { font-weight: normal; background: #1c1f17; color: #f4f2ea; padding: 0 4px; }
+  #events { list-style: none; margin: 0; padding: 0; }
+  #events time { color: #6f6a4f; margin-right: 8px; }
+  button:disabled { opacity: .45; cursor: default; }
+  .bar { display: inline-block; width: 90px; height: 7px; border: 1px solid #1c1f17; vertical-align: middle; margin: 0 6px; }
+  .bar i { display: block; height: 100%; background: #1c1f17; }
+  #progress { border: 1px solid #1c1f17; padding: 6px 10px; margin: 8px 0; }
+  #ach { list-style: none; margin: 0; padding: 0; columns: 2; column-gap: 20px; }
+  #ach li { break-inside: avoid; }
+  #ach .todo { color: #6f6a4f; }
+  h2 button { font-size: 11px; padding: 2px 6px; margin-left: 8px; text-transform: none; letter-spacing: 0; }
+  h2 { font-size: 12px; font-weight: normal; color: #6f6a4f; text-transform: uppercase; letter-spacing: .04em; margin: 14px 0 4px; }
+</style>
+<main>
+  <canvas id="cv" width="480" height="720"></canvas>
+  <div class="row"><span id="clock"></span><span id="speeds" style="margin-left:auto"></span></div>
+  <div id="progress"><p id="level"></p><p id="goal"></p></div>
+  <div class="row"><button id="buildBtn">dig mode</button><span id="buildNote"></span></div>
+  <div class="row" id="tools" hidden></div>
+  <p id="stores"></p>
+  <p id="brood"></p>
+  <div class="tables">
+    <div class="scroll"><table id="castes"></table></div>
+    <div class="scroll"><table id="bld"></table></div>
+  </div>
+  <h2>Achievements <span id="best"></span><button id="forget">forget them</button></h2>
+  <ul id="ach"></ul>
+  <h2>Recent events</h2>
+  <ul id="events"><li class="dim">nothing yet</li></ul>
+  <h2>How this nest works (numbers in nest.js, rules in rules.js)</h2>
+  <div class="scroll"><table id="pace"></table></div>
+</main>
+<script type="module">
+import { createGame } from '../../engine/index.js';
+import * as nest from './nest.js';
+
+// The numbers are in nest.js and the colony's rules in rules.js. This page draws the nest and shows what is going on.
+const cv = document.getElementById('cv');
+const events = [];
+let eventsDirty = false;
+const clockText = () => { const s = Math.floor(game.sim.tick / nest.TICKS_PER_SECOND); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+function note(text) { events.unshift([clockText(), text]); if (events.length > 8) events.pop(); eventsDirty = true; }
+
+const game = createGame(nest.makeConfig({ canvas: cv, onFrame: updateUI }));
+const { sim, world } = game, economy = nest.economy, colony = nest.colony, progress = nest.progress;
+nest.populate(sim);
+window.game = game;                                              // poke at it from the console
+colony.onEvent = (kind, i, detail) => {
+  if (kind === 'queen died') note(`the queen died of ${detail}: no more eggs will be laid`);
+  else if (kind === 'died' && detail !== 'old age') note(`a ${sim.types[sim.type[i]].name} died of ${detail}`);
+};
+
+// What the player earns is decided in nest.js (tables) and modules/progress.js (the bookkeeping); this only says it.
+const rewardText = r => r?.grant ? ' (+' + Object.entries(r.grant).map(([k, n]) => `${n} ${k}`).join(', ') + ')' : '';
+progress.onEvent = (kind, it) => {
+  if (kind === 'level') note(`<b>level ${it.level}</b> ${it.title ?? ''}${rewardText(it.reward)}`);
+  else if (kind === 'unlocked') { note(`you can now carve a ${it.id}`); buildTools(); }
+  else if (kind === 'achieved') note(`achievement: ${it.title}`);
+  else if (kind === 'goal') note(`done: ${it.title}${rewardText(it.reward)}`);
+  progressDirty = true;
+};
+let progressDirty = true;
+
+// ── controls
+function group(el, items, isOn, pick) {
+  const btns = [];
+  for (const [label, value, locked] of items) {
+    const b = document.createElement('button');
+    b.innerHTML = label; b.className = isOn(value) ? 'on' : ''; b.disabled = !!locked;
+    b.onclick = () => { pick(value); for (const x of btns) x.className = ''; b.className = 'on'; };
+    btns.push(b); el.append(b, ' ');
+  }
+}
+group(document.getElementById('speeds'), [['pause', 0], ['1×', 1], ['2×', 2], ['4×', 4], ['8×', 8]], s => s === game.speed, s => { game.speed = s; });
+
+let buildOn = false, toolChoice = null, lineStart = null, routesSince = 0, rotation = 'auto';
+const buildBtn = document.getElementById('buildBtn'), buildNote = document.getElementById('buildNote'), toolsEl = document.getElementById('tools');
+const costText = name => Object.entries(economy.costOf(name)).map(([r, n]) => `${n} ${r}`).join(', ');
+const fixed = name => nest.CHAMBERS.find(c => c.name === name)?.fixed;
+// A chamber only fits with its opening on a tunnel. So the finger does not have to find the exact cell,
+// the nearest spot within two cells where it does fit is used.
+const NEAR = [];
+for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) NEAR.push([i, j]);
+NEAR.sort((a, b) => (a[0] * a[0] + a[1] * a[1]) - (b[0] * b[0] + b[1] * b[1]));
+function snap(name, x, y) { for (const [i, j] of NEAR) if (game.canPlace(name, x + i, y + j, rotation)) return [x + i, y + j]; return null; }
+function applyTool() {
+  const v = toolChoice;
+  game.preview = [];
+  if (!buildOn || v === null) game.tool = null;                  // outside dig mode a drag always pans
+  else if (v === '!') game.tool = (x, y, phase) => {             // fill a tunnel back in, or remove a chamber
+    if (phase !== 'down' && phase !== 'drag') return;
+    const id = world.inside(x, y) ? world.bldAt[y * world.w + x] : -1;
+    if (id >= 0 && fixed(world.buildings[id].name)) buildNote.textContent = `the ${world.buildings[id].name} cannot be removed`;
+    else game.demolish(x, y);
+  };
+  else if (v === 'tunnel') game.tool = (x, y, phase) => {        // straight line from where the finger lands to where it lifts
+    if (phase === 'down') lineStart = [x, y];
+    if (phase === 'cancel' || !lineStart) { lineStart = null; game.preview = []; return; }
+    if (phase === 'up') { game.line('tunnel', lineStart[0], lineStart[1], x, y); lineStart = null; game.preview = []; }
+    else game.preview = world.lineCells(lineStart[0], lineStart[1], x, y).filter(([i, j]) => world.inside(i, j) && world.get(i, j) === world.fill);
+  };
+  else game.tool = (x, y, phase) => {                            // drag to position the chamber, lift to carve it
+    if (phase === 'up') {
+      game.preview = [];
+      const at = snap(v, x, y);
+      const why = game.canBuild(v);                              // the modules answer: is it unlocked, can the colony pay?
+      if (why !== true) buildNote.textContent = `cannot carve a ${v}: ${why || 'not allowed'}`;
+      else if (at && game.place(v, at[0], at[1], rotation)) buildNote.textContent = `carved a ${v} for ${costText(v) || 'nothing'}`;   // placing it takes the twigs
+      else buildNote.textContent = `a ${v} needs solid earth, with its opening on a tunnel`;
+    }
+    else { const at = phase === 'cancel' ? null : snap(v, x, y); game.preview = at ? game.footprint(v, at[0], at[1], rotation) : []; }
+  };
+}
+buildBtn.onclick = () => {
+  buildOn = !buildOn;
+  buildBtn.className = buildOn ? 'on' : ''; buildBtn.textContent = buildOn ? 'done digging' : 'dig mode';
+  toolsEl.hidden = !buildOn;
+  if (buildOn) { game.beginBuild(); applyTool(); buildNote.textContent = 'time is stopped while you dig'; }
+  else { game.tool = null; game.endBuild(); buildNote.textContent = 'routes updating…'; routesSince = performance.now(); }
+};
+const lockText = name => progress.unlocks().find(u => u.id === name)?.text ?? 'locked';
+const label = p => `<span class="sw" style="background:${p.color}"></span>${p.name} <small>${progress.isUnlocked(p.name)
+  ? (p.jobs ? p.jobs + ' ' + p.staff[0] + 's' : 'holds ' + p.capacity) + (costText(p.name) ? ' · ' + costText(p.name) : '') : lockText(p.name)}</small>`;
+const ROTS = ['auto', 0, 1, 2, 3], ROT_NAMES = { auto: 'opening: to tunnel', 0: 'opening: as drawn', 1: 'opening: turned 90°', 2: 'opening: turned 180°', 3: 'opening: turned 270°' };
+const rotBtn = document.createElement('button');
+rotBtn.textContent = ROT_NAMES[rotation];
+rotBtn.onclick = () => { rotation = ROTS[(ROTS.indexOf(rotation) + 1) % ROTS.length]; rotBtn.textContent = ROT_NAMES[rotation]; };
+// Drawn again whenever something is unlocked: a locked chamber is shown, greyed, with what it takes.
+function buildTools() {
+  toolsEl.textContent = '';
+  group(toolsEl, [['move view', null], ['<span class="sw" style="background:#e0cda6"></span>tunnel <small>free</small>', 'tunnel'],
+    ...world.prefabs.filter(p => !p.fixed).map(p => [label(p), p.name, !progress.isUnlocked(p.name)]), ['fill in', '!']],
+    v => v === toolChoice, v => { toolChoice = v; applyTool(); });
+  toolsEl.append(rotBtn);
+}
+buildTools();
+document.getElementById('forget').onclick = () => { progress.resetProfile(); progressDirty = true; };
+
+// ── the definitions, turned back into words
+{
+  const t = ticks => { const s = ticks / nest.TICKS_PER_SECOND; return s >= 120 ? `${+(s / 60).toFixed(1)} min` : `${Math.round(s)} s`; };
+  const list = o => Object.entries(o).map(([r, n]) => `${n} ${r}`).join(', ');
+  const rows = [
+    ...nest.CASTES.map(c => [c.name, `walks ${c.walk} cells a second; ${c.job}s; ${c.lifespan ? 'lives about ' + t(c.lifespan) : 'does not die of age'}`]),
+    ...nest.NEEDS.map(n => [`${n.name} becomes desperate after`, t(n.fullAfter)]),
+    ['an ant desperately hungry dies after', t(nest.STARVES_AFTER)],
+    ['the queen lays', `${nest.CLUTCH} eggs a shift for ${nest.CLUTCH_FOOD} food, while nurseries have room and food is above ${nest.LAY_ABOVE_FOOD}`],
+    ['an egg hatches after', `${nest.CARE_TO_HATCH} nursing shifts; a nursery holds ${nest.BROOD_PER_NURSERY} eggs`],
+    ['a new ant becomes', 'the caste with the most unfilled jobs'],
+    ...nest.CHAMBERS.filter(c => c.job).map(c => [`a ${c.job.action} shift (${c.name})`,
+      [`takes ${t(c.job.takes)}`, c.job.makes && 'brings ' + list(c.job.makes), c.job.uses && 'uses ' + list(c.job.uses)].filter(Boolean).join('; ')]),
+    ...nest.CHAMBERS.filter(c => c.serves).map(c => [`${c.serves.action} at a ${c.name}`, [`takes ${t(c.serves.takes)}`, c.serves.uses && 'uses ' + list(c.serves.uses)].filter(Boolean).join('; ')]),
+  ];
+  document.getElementById('pace').innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td style="text-align:left">${v}</td></tr>`).join('');
+}
+
+// ── readouts
+const clockEl = document.getElementById('clock');
+let frames = 0, rateFrom = { tick: 0, totals: null }, rates = {};
+function updateUI(g) {
+  if (routesSince && !g.routesBusy) { buildNote.textContent = `routes updated ${((performance.now() - routesSince) / 1000).toFixed(1)} s after digging`; routesSince = 0; }
+  if (frames++ % 12) return;
+  clockEl.textContent = clockText();
+  // per-minute rates, measured over the last game minute
+  if (!rateFrom.totals || sim.tick - rateFrom.tick >= nest.minutes(1)) {
+    const now = JSON.parse(JSON.stringify(economy.totals));
+    if (rateFrom.totals) for (const r of Object.keys(now)) rates[r] = [now[r].made - rateFrom.totals[r].made, now[r].used - rateFrom.totals[r].used];
+    rateFrom = { tick: sim.tick, totals: now };
+  }
+  document.getElementById('stores').innerHTML = Object.keys(economy.town).map(r => {
+    const low = nest.RESOURCES[r].low && economy.town[r] < nest.RESOURCES[r].low, v = Math.floor(economy.town[r]);
+    return `${r}: ${low ? `<b>${v}</b>` : v}${rates[r] ? ` <span class="dim">(+${Math.round(rates[r][0])} −${Math.round(rates[r][1])} a minute)</span>` : ''}`;
+  }).join(' · ');
+  const st = colony.stats, died = Object.entries(st.died).map(([c, n]) => `${n} of ${c}`).join(', ');
+  document.getElementById('brood').innerHTML = `${colony.queenAlive ? 'queen alive' : '<b>the queen is dead</b>'} · eggs ${colony.brood.length} of ${colony.room()} · ` +
+    `${st.laid} laid, ${st.hatched} hatched · died: ${died || 'none'}`;
+  const census = colony.census();
+  document.getElementById('castes').innerHTML = `<tr><th>caste</th><th>ants</th><th>without a job</th></tr>` +
+    Object.entries(census).map(([c, v]) => `<tr><td>${c}</td><td>${v.count}</td><td>${v.jobless || ''}</td></tr>`).join('') +
+    `<tr><td>all</td><td>${sim.count}</td><td></td></tr>`;
+  const kinds = new Map();
+  for (const b of world.buildings) if (b) {
+    const k = kinds.get(b.name) ?? { n: 0, open: 0, workers: 0, jobs: 0, inside: 0 };
+    k.n++; k.open += b.open ? 1 : 0; k.workers += b.workers; k.jobs += b.jobs; k.inside += b.inside; kinds.set(b.name, k);
+  }
+  document.getElementById('bld').innerHTML = `<tr><th>chamber</th><th>count</th><th>open</th><th>staff</th><th>inside</th></tr>` +
+    [...kinds].map(([name, k]) => `<tr><td>${name}</td><td>${k.n}</td><td>${k.open}</td><td>${k.jobs ? k.workers + '/' + k.jobs : ''}</td><td>${k.inside}</td></tr>`).join('');
+  // level and goal move with the numbers, so they are redrawn every time; the achievement list only when something was earned
+  const bar = r => `<span class="bar"><i style="width:${Math.round(r * 100)}%"></i></span>`;
+  const L = progress.levelInfo(), goal = progress.goal();
+  document.getElementById('level').innerHTML = `<b>level ${L.level}</b> ${L.title ?? ''}` +
+    (L.next ? ` <span class="dim">· next${L.next.title ? ' (' + L.next.title + ')' : ''}:</span>${bar(L.next.progress.ratio)}${L.next.text}` : ' <span class="dim">· the highest</span>');
+  document.getElementById('goal').innerHTML = goal
+    ? `goal ${goal.n}/${goal.of}: ${goal.title}${bar(goal.progress.ratio)}<span class="dim">${goal.text ?? progress.describe(goal.when)}${rewardText(goal.reward)}</span>`
+    : '<span class="dim">all goals met</span>';
+  if (progressDirty) {
+    progressDirty = false;
+    document.getElementById('ach').innerHTML = progress.achievements().map(a =>
+      `<li class="${a.done ? '' : 'todo'}">${a.done ? '■' : '□'} ${a.title} <small class="dim">${a.text}</small></li>`).join('');
+  }
+  document.getElementById('best').textContent = `· best nest ${progress.get('population.max')} ants · nests started ${progress.get('nests')}`;
+  if (eventsDirty) { document.getElementById('events').innerHTML = events.map(([t, e]) => `<li><time>${t}</time>${e}</li>`).join(''); eventsDirty = false; }
+}
+</script>

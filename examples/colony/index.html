@@ -1,0 +1,512 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Colony engine test</title>
+<style>
+  body { margin: 0; padding-block: 12px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+         background: #f4f2ea; color: #1c1f17; font: 13px/1.4 ui-monospace, Consolas, monospace; }
+  main { max-width: 768px; margin: 0 auto; }
+  canvas { width: 100%; display: block; border: 1px solid #1c1f17; image-rendering: pixelated; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+  button { font: inherit; padding: 8px 10px; border: 1px solid #1c1f17; background: transparent; color: #1c1f17; cursor: pointer; }
+  button.on { background: #1c1f17; color: #f4f2ea; }
+  button small { opacity: .7; }
+  .sw { display: inline-block; width: 9px; height: 9px; margin-right: 4px; border: 1px solid #1c1f17; }
+  input[type=range] { flex: 1; min-width: 120px; accent-color: #1c1f17; }
+  table { border-collapse: collapse; font: inherit; font-variant-numeric: tabular-nums; }
+  td, th { text-align: right; padding: 1px 10px 1px 0; font-weight: normal; white-space: nowrap; }
+  th { color: #6f6a4f; border-bottom: 1px solid #cfcab6; }
+  td:first-child, th:first-child { text-align: left; }
+  .tables { display: flex; flex-wrap: wrap; gap: 8px 28px; }
+  .scroll { overflow-x: auto; }
+  textarea { width: 100%; box-sizing: border-box; font: inherit; color: inherit; background: #fff; border: 1px solid #cfcab6; padding: 6px; white-space: pre; overflow-x: auto; resize: vertical; }
+  button:disabled { opacity: .5; cursor: default; }
+  [hidden] { display: none !important; }
+  #buildNote { color: #6f6a4f; }
+  #people b { font-weight: normal; background: #1c1f17; color: #f4f2ea; padding: 0 4px; }
+</style>
+<main>
+  <canvas id="cv" width="768" height="512"></canvas>
+  <div class="row" id="sizes">map: </div>
+  <div class="row"><button id="buildBtn">build mode</button><span id="buildNote"></span></div>
+  <div class="row" id="tools" hidden></div>
+  <div class="row">
+    <span>agents <b id="nLabel">200</b></span>
+    <input id="nSlider" type="range" min="50" max="20000" step="50" value="200">
+    <span id="speeds"></span>
+  </div>
+  <p id="people"></p>
+  <div class="tables">
+    <div class="scroll"><table id="bld"></table></div>
+    <div class="scroll"><table id="pop"></table></div>
+  </div>
+  <p id="perf"></p>
+  <div class="row">
+    <button id="benchBtn">benchmark</button>
+    <button id="benchFullBtn">benchmark + ×100</button>
+    <button id="benchHereBtn">this map only</button>
+    <button id="copyBtn" disabled>copy results</button>
+    <span id="benchMsg"></span>
+  </div>
+  <textarea id="benchOut" rows="24" readonly hidden aria-label="Benchmark results"></textarea>
+</main>
+<script type="module">
+import { createGame } from '../../engine/index.js';
+
+// A colony as engine config: prefab buildings, six needs, homes and jobs, three agent types.
+// The map size is a parameter: changing it throws the game away and creates a new one.
+const BASE_W = 96, BASE_H = 64, BASE_AGENTS = 200;
+
+// The hand-made town for the base map.
+function baseTown(w) {
+  // Streets first: buildings placed afterwards turn their doors towards the nearest one.
+  w.line('street', 2, 21, 28, 21); w.line('street', 28, 2, 28, 40); w.line('street', 28, 40, 58, 40);
+  w.line('street', 58, 40, 58, 24); w.line('street', 58, 24, 92, 24);
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 6; c++) w.place('house', 4 + c * 4, 4 + r * 4);   // 24 houses = 144 beds, one-cell alleys between
+  w.place('canteen', 40, 22); w.place('canteen', 78, 48);
+  w.place('well', 50, 6);     w.place('well', 22, 30);
+  w.place('bath', 70, 34);
+  w.place('plaza', 42, 30);
+  w.place('park', 10, 42);    w.place('park', 66, 46);
+  w.place('workshop', 36, 50); w.place('workshop', 84, 10); w.place('workshop', 76, 18);
+}
+
+// A generated town for bigger maps: the same mix of buildings, `factor` times as many,
+// grouped into neighbourhoods. Seeded, so a given size always gives the same town.
+function generatedTown(w, factor) {
+  let seed = 4242;
+  const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+  const int = (lo, hi) => lo + ((rnd() * (hi - lo + 1)) | 0);
+  const centres = [];                                            // neighbourhood centres, about two per base-map area
+  for (let k = 0; k < Math.ceil(2 * factor); k++) centres.push([int(14, w.w - 15), int(12, w.h - 13)]);
+  for (let k = 1; k < centres.length; k++) {                     // a street from each centre to the previous one, in an L
+    const [ax, ay] = centres[k - 1], [bx, by] = centres[k];
+    w.line('street', ax, ay, bx, ay); w.line('street', bx, ay, bx, by);
+  }
+  const scatter = (name, count, spread, lattice) => {
+    for (let k = 0, tries = 0; k < count && tries < count * 60; tries++) {
+      const [cx, cy] = centres[int(0, centres.length - 1)];
+      let x = cx + int(-spread, spread), y = cy + int(-spread, spread);
+      if (lattice) { x -= x % lattice; y -= y % lattice; }       // houses line up in rows
+      if (w.place(name, x, y)) k++;
+    }
+  };
+  scatter('house', 24 * factor, 13, 4);
+  scatter('canteen', 2 * factor, 18); scatter('well', 2 * factor, 18); scatter('bath', factor, 18);
+  scatter('plaza', factor, 18); scatter('park', 2 * factor, 20); scatter('workshop', 3 * factor, 22);
+}
+
+function makeConfig(factor) {
+  const k = Math.sqrt(factor);                                   // factor multiplies the AREA, so each side grows by its square root
+  return {
+    canvas: document.getElementById('cv'),
+    agents: BASE_AGENTS * factor,
+    view: { background: '#f4f2ea' },
+    floor: { color: '#ffffff', color2: '#f1efe4' },
+    tiles: [
+      // Cheap to route across and fast to walk on, so agents prefer it without being forced to; idle agents stroll along it.
+      { name: 'street', color: '#cdc6b0', walkCost: 0.5, speed: 1.6, street: true },
+    ],
+    // Buildings the player can place. They are solid: agents go in at the door and come out at the exit.
+    //   beds      residents it houses
+    //   jobs      worker slots; it is closed until one worker is assigned, and holds more customers the fuller its staff
+    //   capacity  customers it holds when fully staffed; arrivals beyond that queue at the door
+    //   door/exit side of the footprint (N, E, S, W) before rotation; the exit defaults to the door
+    prefabs: [
+      { name: 'house',    w: 3, h: 3, beds: 6, color: '#b9bfa6', height: 12 },
+      { name: 'canteen',  w: 4, h: 4, jobs: 4, capacity: 16, exit: 'E', color: '#e6cf8f', height: 16 },
+      { name: 'well',     w: 2, h: 2, jobs: 1, capacity: 10, color: '#a9c4cc', height: 8 },
+      { name: 'bath',     w: 4, h: 3, jobs: 2, capacity: 10, color: '#d9c3cf', height: 14 },
+      { name: 'plaza',    w: 5, h: 5, jobs: 1, capacity: 30, exit: 'N', color: '#d3dcc0', height: 6 },
+      { name: 'park',     w: 5, h: 5, jobs: 1, capacity: 30, exit: 'N', color: '#9dbb7a', height: 6 },
+      { name: 'workshop', w: 5, h: 4, jobs: 8, color: '#c9b7a0', height: 18 },
+    ],
+    map: {
+      width: Math.round(BASE_W * k), height: Math.round(BASE_H * k),
+      build: w => (factor === 1 ? baseTown(w) : generatedTown(w, factor)),
+    },
+    needs: [
+      { name: 'hunger', grow: 0.0008, weight: 1.2 },
+      { name: 'fatigue', grow: 0.0005, weight: 1.2 },
+      { name: 'lonely', grow: 0.0006, weight: 1.0 },
+      { name: 'thirst', grow: 0.0011, weight: 1.3 },
+      { name: 'dirty', grow: 0.0003, weight: 0.9 },
+      { name: 'bored', grow: 0.0007, weight: 0.9 },
+    ],
+    actions: [
+      { name: 'eat', at: 'canteen', effects: { hunger: -0.010 }, color: '#b08a2e' },
+      { name: 'sleep', at: '@home', effects: { fatigue: -0.006 }, color: '#1c1f17' },
+      // No bed: sleep where you stand, four times slower.
+      { name: 'sleep rough', onlyIf: 'homeless', effects: { fatigue: -0.0015 }, color: '#5a5d50' },
+      { name: 'social', at: 'plaza', effects: { lonely: -0.008 }, color: '#6f8a44' },
+      { name: 'drink', at: 'well', effects: { thirst: -0.020 }, color: '#3f7f8c' },
+      { name: 'wash', at: 'bath', effects: { dirty: -0.008 }, color: '#9a5c7c' },
+      { name: 'play', at: 'park', effects: { bored: -0.007 }, color: '#b5553a' },
+      // What employed agents do when no need is urgent. Jobless agents fall through to wander.
+      { name: 'work', at: '@job', duration: 300, color: '#5b6bb0' },
+      { name: 'wander', color: '#a9a493' },
+    ],
+    types: [
+      { name: 'adult', share: 3 },
+      { name: 'child', share: 1, works: false, speed: 1.25, grow: { fatigue: 1.4, bored: 1.6 }, weight: { bored: 1.5, dirty: 0.5 }, look: { height: 10 } },
+      { name: 'elder', share: 1, speed: 0.65, grow: { fatigue: 1.3, bored: 0.6 }, weight: { fatigue: 1.3, lonely: 1.4 }, look: { head: '#6f6a4f' } },
+    ],
+    tuning: { pace: 0.4 },
+    onFrame: updateUI,
+  };
+}
+
+let game, sim, world, toolChoice = null, speedChoice = 1, startMs = 0;
+const nSlider = document.getElementById('nSlider'), nLabel = document.getElementById('nLabel');
+
+let buildOn = false, lineStart = null, routesSince = 0, rotation = 'auto';
+function applyTool() {
+  const v = toolChoice;
+  game.preview = [];
+  if (!buildOn || v === null) game.tool = null;                 // outside build mode a drag always pans
+  else if (v === '!') game.tool = (x, y, phase) => { if (phase === 'down' || phase === 'drag') game.demolish(x, y); };
+  else if (v === 'street') game.tool = (x, y, phase) => {        // straight line from where the finger lands to where it lifts
+    if (phase === 'down') lineStart = [x, y];
+    if (phase === 'cancel' || !lineStart) { lineStart = null; game.preview = []; return; }
+    if (phase === 'up') { game.line('street', lineStart[0], lineStart[1], x, y); lineStart = null; game.preview = []; }
+    else game.preview = world.lineCells(lineStart[0], lineStart[1], x, y).filter(([i, j]) => world.inside(i, j) && world.get(i, j) === 0);
+  };
+  else game.tool = (x, y, phase) => {                            // drag to position the footprint, lift to place it
+    if (phase === 'up') { game.place(v, x, y, rotation); game.preview = []; }
+    else game.preview = phase === 'cancel' ? [] : game.footprint(v, x, y, rotation);   // footprint + doorstep; empty where it does not fit
+  };
+}
+const buildBtn = document.getElementById('buildBtn'), buildNote = document.getElementById('buildNote'), toolsEl = document.getElementById('tools');
+function setBuild(on) {
+  if (on === buildOn) return;
+  buildOn = on;
+  buildBtn.className = on ? 'on' : ''; buildBtn.textContent = on ? 'done building' : 'build mode';
+  toolsEl.hidden = !on;
+  if (on) {
+    game.beginBuild(); applyTool();
+    buildNote.textContent = 'paused: homes, jobs and routes update when you finish';
+  } else {
+    game.tool = null;
+    // Homes and jobs are reassigned now; routes update in the background while the game runs on the old ones.
+    buildNote.textContent = `homes and jobs updated in ${game.endBuild().toFixed(0)} ms, routes updating…`;
+    routesSince = performance.now();
+  }
+}
+buildBtn.onclick = () => setBuild(!buildOn);
+// Which way a new building's door faces: towards the nearest street, or a fixed side.
+const ROTS = ['auto', 0, 1, 2, 3], ROT_NAMES = { auto: 'door: to street', 0: 'door: as drawn', 1: 'door: turned 90°', 2: 'door: turned 180°', 3: 'door: turned 270°' };
+const rotBtn = document.createElement('button');
+rotBtn.textContent = ROT_NAMES[rotation];
+rotBtn.onclick = () => { rotation = ROTS[(ROTS.indexOf(rotation) + 1) % ROTS.length]; rotBtn.textContent = ROT_NAMES[rotation]; };
+
+function start(factor) {
+  if (game) game.destroy();
+  if (buildOn) { buildOn = false; buildBtn.className = ''; buildBtn.textContent = 'build mode'; toolsEl.hidden = true; buildNote.textContent = ''; }
+  const t = performance.now();
+  game = createGame(makeConfig(factor));
+  ({ sim, world } = game);
+  game.step(1);                                                  // first tick assigns homes/jobs and builds every field
+  startMs = performance.now() - t;
+  game.speed = speedChoice; applyTool();
+  nSlider.value = sim.count; nLabel.textContent = sim.count;
+  window.game = game;                                            // poke at it from the console
+}
+start(1);
+
+// ── controls
+function group(el, items, isOn, pick) {
+  const btns = [];
+  for (const [label, value] of items) {
+    const b = document.createElement('button');
+    b.innerHTML = label; b.className = isOn(value) ? 'on' : '';
+    b.onclick = () => { pick(value); for (const x of btns) x.className = ''; b.className = 'on'; };
+    btns.push(b); el.append(b, ' ');
+  }
+}
+const prefabLabel = p => `<span class="sw" style="background:${p.color}"></span>${p.name} <small>${p.beds ? p.beds + ' beds' : p.jobs + ' jobs'}${p.capacity ? ', holds ' + p.capacity : ''}</small>`;
+group(document.getElementById('sizes'), [['96×64', 1], ['×3 area', 3], ['×6 area', 6], ['×10 area', 10], ['×100 area', 100]], f => f === 1, start);
+group(toolsEl,
+  [['move view', null], ['<span class="sw" style="background:#cdc6b0"></span>street', 'street'],
+   ...world.prefabs.map(p => [prefabLabel(p), p.name]), ['demolish', '!']],
+  v => v === toolChoice, v => { toolChoice = v; applyTool(); });
+toolsEl.append(rotBtn);
+group(document.getElementById('speeds'), [['pause', 0], ['1×', 1], ['4×', 4], ['16×', 16]], s => s === speedChoice, s => { speedChoice = s; game.speed = s; });
+nSlider.oninput = () => { game.setCount(+nSlider.value); nLabel.textContent = sim.count; };
+
+// ── readouts
+let frames = 0, frameCount = 0;
+function updateUI(g) {
+  frameCount++;
+  if (g !== game) return;
+  if (routesSince && !g.routesBusy) { buildNote.textContent = `routes updated ${(performance.now() - routesSince).toFixed(0)} ms after leaving build mode`; routesSince = 0; }
+  if (frames++ % 15) return;
+  const homeless = sim.count - sim.housed, jobless = sim.workforce - sim.employed;
+  document.getElementById('people').innerHTML =
+    `housed ${sim.housed}/${sim.count} (${sim.beds} beds)${homeless ? ` <b>${homeless} homeless</b>` : ''} · ` +
+    `employed ${sim.employed}/${sim.workforce} able to work (${sim.jobs} jobs)${jobless ? ` <b>${jobless} jobless</b>` : ''}` +
+    `<span id="queueNote"></span>`;
+
+  const by = new Map();
+  let total = 0;
+  for (const b of world.buildings) if (b) {
+    const r = by.get(b.name) ?? { n: 0, open: 0, workers: 0, jobs: 0, residents: 0, beds: 0, customers: 0, cap: 0 };
+    r.n++; total++; r.open += b.open ? 1 : 0; r.workers += b.workers; r.jobs += b.jobs; r.residents += b.residents; r.beds += b.beds;
+    r.customers += b.customers; r.cap += b.cap;
+    by.set(b.name, r);
+  }
+  let t = '<tr><th>building</th><th>count</th><th>open</th><th>workers</th><th>residents</th><th>customers inside</th></tr>';
+  for (const [name, r] of by)
+    t += `<tr><td>${name}</td><td>${r.n}</td><td>${r.open}</td><td>${r.jobs ? r.workers + '/' + r.jobs : ''}</td><td>${r.beds ? r.residents + '/' + r.beds : ''}</td>` +
+         `<td>${r.cap ? r.customers + '/' + r.cap : ''}</td></tr>`;
+  document.getElementById('bld').innerHTML = t;
+
+  const cnt = new Int32Array(sim.A), avg = new Float32Array(sim.K);
+  for (let i = 0; i < sim.count; i++) { cnt[sim.action[i]]++; for (let k = 0; k < sim.K; k++) avg[k] += sim.needsOf[i * sim.K + k]; }
+  let queue = 0;
+  for (let i = 0; i < sim.count; i++) if (sim.wait[i] > 0) queue++;
+  let h = `<tr><th>action</th><th>agents</th><th>busy</th><th>crowding</th><th>need</th><th>avg</th></tr>`;
+  sim.actions.forEach((a, ai) => {
+    const k = sim.until[ai], service = a.at && a.at[0] !== '@';
+    h += `<tr><td><span class="sw" style="background:${a.color}"></span>${a.name}</td><td>${cnt[ai]}</td><td>${sim.users[ai]}</td>` +
+         `<td>${service ? (sim.saturation[ai] * 100).toFixed(0) + '%' : ''}</td>` +
+         `<td>${k >= 0 ? sim.needs[k].name : ''}</td><td>${k >= 0 ? (avg[k] / sim.count).toFixed(2) : ''}</td></tr>`;
+  });
+  document.getElementById('pop').innerHTML = h;
+  document.getElementById('queueNote').textContent = queue ? ` · ${queue} queueing at a door` : '';
+  document.getElementById('perf').textContent =
+    `map ${world.w}×${world.h}, ${total} buildings, created in ${startMs.toFixed(0)} ms | ` +
+    `sim ${g.stats.simMs.toFixed(3)} ms | draw ${g.stats.renderMs.toFixed(3)} ms | ${g.stats.fps.toFixed(0)} fps`;
+}
+
+// ── benchmark: several scenarios, each measured the same way, reported as one plain-text table
+// (one column per scenario) that can be copied and pasted anywhere.
+const benchOut = document.getElementById('benchOut'), benchMsg = document.getElementById('benchMsg'), copyBtn = document.getElementById('copyBtn');
+const benchBtns = ['benchBtn', 'benchFullBtn', 'benchHereBtn'].map(id => document.getElementById(id));
+const wait = ms => new Promise(r => setTimeout(r, ms));
+// Next animation frame, or 250 ms at the latest: a hidden tab stops delivering frames and must not hang the benchmark.
+const nextFrame = () => new Promise(r => {
+  let done = false;
+  const fin = t => { if (!done) { done = true; r(t); } };
+  requestAnimationFrame(fin); setTimeout(() => fin(performance.now()), 250);
+});
+const pct = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
+
+// Frame intervals over `ms` of real running: what the player actually sees.
+// The first frames after a long blocking measurement carry stale timestamps, which shows up as one
+// enormous fake frame. So 20 frames are let through before sampling starts, and fps is counted
+// from the number of frames delivered in real elapsed time rather than from the intervals.
+async function frameTimes(ms, onStart) {
+  for (let k = 0; k < 20; k++) await nextFrame();
+  if (onStart) onStart();
+  const out = [];
+  let prev = await nextFrame();
+  const t0 = performance.now(), end = t0 + ms;
+  while (performance.now() < end) { const t = await nextFrame(); out.push(t - prev); prev = t; }
+  const fps = out.length / (performance.now() - t0) * 1000;
+  out.sort((x, y) => x - y);
+  out.fps = fps;
+  return out;
+}
+
+async function measure(label, factor, agents, say, env) {
+  const r = { label };
+  // 1. create
+  let t = performance.now();
+  if (factor) start(factor);
+  r.create = factor ? performance.now() - t : NaN;
+  if (agents) { game.setCount(agents); nSlider.value = sim.count; nLabel.textContent = sim.count; }
+  game.speed = 1;
+  game.ticksPerSecond = 1000 / env.interval;                     // benchmark at one tick per displayed frame, the heaviest steady load
+  r.map = `${world.w}x${world.h}`; r.agents = sim.count;
+
+  // 2. settle: let agents spread out and the routes they need get built, as in the first seconds of play
+  say('settling');
+  for (let k = 0; k < 800; k++) { world.work(2); sim.step(); if (k % 200 === 199) await wait(0); }
+
+  // 3. simulation, split by phase, with background route work timed apart
+  say('simulation');
+  sim.profile = true; sim.prof.upkeep = sim.prof.decide = sim.prof.move = 0; sim.prof.ticks = 0;
+  let routeT = 0, simT = 0, worstTick = 0, use = [0, 0, 0], queue = 0, insideSum = 0;
+  const TICKS = 300;
+  for (let k = 0; k < TICKS; k++) {
+    const t0 = performance.now(); world.work(2);
+    const t1 = performance.now(); sim.step();
+    const t2 = performance.now();
+    routeT += t1 - t0; simT += t2 - t1; if (t2 - t0 > worstTick) worstTick = t2 - t0;
+    for (let q = 0; q < 3; q++) use[q] += sim.routeUse[q];
+  }
+  sim.profile = false;
+  r.sim = simT / TICKS; r.decide = sim.prof.decide / TICKS; r.move = sim.prof.move / TICKS; r.upkeep = sim.prof.upkeep / TICKS;
+  r.routes = routeT / TICKS; r.worstTick = worstTick;
+
+  // 4. drawing: building the sprite list (CPU), handing it over, and waiting for the GPU to finish
+  say('drawing');
+  const R = game.renderer, gl = R.gl;
+  R.render(); gl.finish();                                       // first frame paints the ground: not a per-frame cost
+  R.profile = true; R.prof.fill = R.prof.submit = 0; R.prof.frames = 0;
+  t = performance.now();
+  for (let k = 0; k < 30; k++) { R.render(); gl.finish(); }
+  const drawAll = (performance.now() - t) / 30;
+  R.profile = false;
+  r.drawFill = R.prof.fill / 30; r.drawSubmit = R.prof.submit / 30; r.drawGpu = Math.max(0, drawAll - r.drawFill - r.drawSubmit);
+  r.sprites = sim.count + R._stripTotal + R.staticCount;
+
+  // 5. the readout tables under the map (redrawn every 15th frame, so a 15th of this per frame)
+  t = performance.now();
+  for (let k = 0; k < 5; k++) { frames = 0; updateUI(game); }
+  r.readouts = (performance.now() - t) / 5 / 15;
+
+  // 6. live: the real loop for 3 seconds
+  say('running live');
+  const ft = await frameTimes(3000, () => { game.frameLog.n = 0; game.logFrames = true; });   // record every frame of the real loop
+  game.logFrames = false;
+  {
+    const L = game.frameLog, n = Math.max(0, L.n - 1), sum = { routes: 0, sim: 0, draw: 0, ui: 0 }, slow = env.interval * 1.5;
+    const blame = { routes: 0, sim: 0, draw: 0, ui: 0, outside: 0 };
+    let worst = -1, long = 0;
+    for (let k = 0; k < n; k++) {
+      for (const q in sum) sum[q] += L[q][k];
+      if (worst < 0 || L.interval[k] > L.interval[worst]) worst = k;
+      if (L.interval[k] > slow) {                                // a long frame: which part of it was biggest?
+        long++;
+        const parts = { routes: L.routes[k], sim: L.sim[k], draw: L.draw[k], ui: L.ui[k] };
+        parts.outside = Math.max(0, L.interval[k] - parts.routes - parts.sim - parts.draw - parts.ui);
+        blame[Object.keys(parts).reduce((x, y) => (parts[y] > parts[x] ? y : x))]++;
+      }
+    }
+    r.live = n ? { routes: sum.routes / n, sim: sum.sim / n, draw: sum.draw / n, ui: sum.ui / n } : null;
+    r.frames = n; r.long = long; r.blame = blame;
+    r.worst = worst < 0 ? null : { interval: L.interval[worst], routes: L.routes[worst], sim: L.sim[worst], draw: L.draw[worst], ui: L.ui[worst] };
+  }
+  r.fps = ft.fps;
+  r.p50 = pct(ft, 0.5); r.p95 = pct(ft, 0.95); r.max = ft[ft.length - 1];
+  r.accounted = r.sim + r.routes + r.drawFill + r.drawSubmit + r.drawGpu + r.readouts;
+
+  // 7. state of the colony, so a fast number that comes from a broken simulation is visible
+  let ins = 0, worst = 0;
+  const avg = new Float32Array(sim.K);
+  for (let i = 0; i < sim.count; i++) {
+    if (sim.inside[i] >= 0) ins++;
+    if (sim.wait[i] > 0) queue++;
+    for (let k = 0; k < sim.K; k++) avg[k] += sim.needsOf[i * sim.K + k];
+  }
+  let worstNeed = 0;
+  for (let k = 0; k < sim.K; k++) if (avg[k] / sim.count > worst) { worst = avg[k] / sim.count; worstNeed = k; }
+  const walkers = use[0] + use[1] + use[2];
+  r.inside = ins / sim.count; r.queue = queue; r.worstNeed = `${worst.toFixed(2)} ${sim.needs[worstNeed].name}`;
+  r.homeless = sim.count - sim.housed; r.jobless = sim.workforce - sim.employed;
+  r.byWindow = walkers ? use[0] / walkers : 0; r.bySector = walkers ? use[1] / walkers : 0; r.straight = walkers ? use[2] / walkers : 0;
+  const wins = world.bwin.filter(w => w);
+  r.buildings = world.buildings.filter(x => x).length;
+  r.windows = wins.length; r.windowCells = wins.length ? world.windowCells / wins.length : 0;
+  r.sectors = `${world.sectors.size}/${world.maxSectors}`; r.memory = world.fieldBytes() / 1048576;
+
+  // 8. edits, as the player makes them in build mode
+  say('editing');
+  const settleRoutes = () => { let n = 0, ms = 0; while (game.routesBusy && n < 20000) { const a = performance.now(); world.work(2); ms += performance.now() - a; sim.step(); n++; } return [n, ms]; };
+  game.beginBuild();
+  t = performance.now();
+  let placed = false;
+  for (let k = 0; k < 600 && !placed; k++) placed = !!game.place('house', 3 + ((k * 7) % (world.w - 6)), 3 + ((k * 13) % (world.h - 6)));
+  r.placeHouse = performance.now() - t + game.endBuild();
+  [r.houseTicks, r.houseWork] = settleRoutes();
+  game.beginBuild();
+  t = performance.now();
+  const y = 2 + ((world.h * 0.61) | 0);
+  game.line('street', 3, Math.min(world.h - 3, y), world.w - 4, Math.min(world.h - 3, y));
+  r.addStreet = performance.now() - t + game.endBuild();
+  [r.streetTicks, r.streetWork] = settleRoutes();
+  game.ticksPerSecond = 60;
+  return r;
+}
+
+function report(results, env) {
+  const f = (v, d) => (v === undefined || Number.isNaN(v) ? '-' : v.toFixed(d)), p = v => (v * 100).toFixed(0) + '%';
+  const budget = env.interval;
+  const rows = [
+    ['SCENARIO', r => r.label],
+    ['map (cells)', r => r.map], ['agents', r => r.agents], ['buildings', r => r.buildings], ['sprites drawn', r => r.sprites],
+    ['', null], ['LIVE (3 s of real running)', null],
+    ['fps (frames delivered per second)', r => f(r.fps, 0)], ['frame ms: median', r => f(r.p50, 1)], ['frame ms: 95th pct', r => f(r.p95, 1)], ['frame ms: worst', r => f(r.max, 1)],
+    ['', null], ['INSIDE THE LIVE LOOP (ms per frame, as it really ran)', null],
+    ['route work', r => f(r.live?.routes, 3)], ['simulation', r => f(r.live?.sim, 3)], ['draw', r => f(r.live?.draw, 3)], ['readout tables', r => f(r.live?.ui, 3)],
+    ['total in our code', r => (r.live ? f(r.live.routes + r.live.sim + r.live.draw + r.live.ui, 2) : '-')],
+    ['', null], [`LONG FRAMES (over ${(budget * 1.5).toFixed(1)} ms)`, null],
+    ['count', r => `${r.long} of ${r.frames}`],
+    ['  biggest part: routes', r => r.blame.routes], ['  biggest part: simulation', r => r.blame.sim], ['  biggest part: draw', r => r.blame.draw],
+    ['  biggest part: readouts', r => r.blame.ui], ['  biggest part: outside our code', r => r.blame.outside],
+    ['', null], ['WORST FRAME (ms)', null],
+    ['lasted', r => f(r.worst?.interval, 1)], ['  route work', r => f(r.worst?.routes, 1)], ['  simulation', r => f(r.worst?.sim, 1)],
+    ['  draw', r => f(r.worst?.draw, 1)], ['  readout tables', r => f(r.worst?.ui, 1)],
+    ['  outside our code', r => (r.worst ? f(Math.max(0, r.worst.interval - r.worst.routes - r.worst.sim - r.worst.draw - r.worst.ui), 1) : '-')],
+    ['', null], ['PER FRAME, TIMED SEPARATELY (ms)', null],
+    ['simulation', r => f(r.sim, 3)], ['  choosing actions', r => f(r.decide, 3)], ['  moving agents', r => f(r.move, 3)], ['  upkeep', r => f(r.upkeep, 3)],
+    ['route work', r => f(r.routes, 3)],
+    ['draw: sprite list', r => f(r.drawFill, 3)], ['draw: hand to GPU', r => f(r.drawSubmit, 3)], ['draw: GPU wait', r => f(r.drawGpu, 3)],
+    ['readout tables', r => f(r.readouts, 3)],
+    ['total measured', r => f(r.accounted, 2)], [`share of ${budget.toFixed(1)} ms frame`, r => p(r.accounted / budget)],
+    ['worst single tick', r => f(r.worstTick, 1)],
+    ['', null], ['COLONY STATE', null],
+    ['inside buildings', r => p(r.inside)], ['queueing at doors', r => r.queue], ['homeless', r => r.homeless], ['jobless', r => r.jobless],
+    ['highest average need', r => r.worstNeed],
+    ['', null], ['ROUTES', null],
+    ['guided by route window', r => p(r.byWindow)], ['guided by sector field', r => p(r.bySector)], ['walking straight', r => p(r.straight)],
+    ['route windows', r => r.windows], ['  average cells', r => f(r.windowCells, 0)], ['sector fields', r => r.sectors], ['route memory MB', r => f(r.memory, 1)],
+    ['', null], ['EDITS', null],
+    ['create game ms', r => f(r.create, 0)],
+    ['place a house ms', r => f(r.placeHouse, 1)], ['  routes ready after', r => `${r.houseTicks} ticks`], ['  route work ms', r => f(r.houseWork, 1)],
+    ['add a street ms', r => f(r.addStreet, 1)], ['  routes ready after', r => `${r.streetTicks} ticks`], ['  route work ms', r => f(r.streetWork, 1)],
+  ];
+  const table = rows.map(([name, get]) => [name, ...(get ? results.map(r => String(get(r))) : [])]);
+  const widths = [];
+  for (const row of table) row.forEach((v, c) => { widths[c] = Math.max(widths[c] ?? 0, v.length); });
+  const body = table.map(row => row.map((v, c) => (c === 0 ? v.padEnd(widths[0]) : v.padStart(widths[c]))).join('  ').trimEnd()).join('\n');
+  return `Colony benchmark v5, ${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC\n${navigator.userAgent}\n` +
+    `GPU: ${env.gpu} | max texture ${env.maxTex} | screen ${screen.width}x${screen.height} @${devicePixelRatio}x | canvas 768x512\n` +
+    `display ≈ ${(1000 / budget).toFixed(0)} Hz (${budget.toFixed(1)} ms per frame) | ${navigator.hardwareConcurrency ?? '?'} cores` +
+    `${navigator.deviceMemory ? ` | ${navigator.deviceMemory} GB RAM class` : ''}\n` +
+    (budget > 40 ? 'WARNING: the page was not getting regular frames (hidden or throttled tab). The LIVE section and frame shares are not meaningful.\n' : '') +
+    `\n${body}\n\n` +
+    'The live run is driven at one simulation tick per displayed frame (normal play is 60 ticks per second).\n' +
+    'Each scenario is settled for 800 ticks first. "Per frame" timings are averages over 300 ticks / 30 draws at 1 tick per frame.\n' +
+    '"Inside the live loop" is timed frame by frame while the game really runs; "timed separately" runs each part in a tight loop.\n' +
+    'If the live figures are much higher than the separate ones, the device is running slower under light load.\n' +
+    '"Outside our code" is frame time not spent in the game: the browser, memory clean-up, or waiting for the display.\n' +
+    'Routes: share of agents walking home or to work, by what guided them. Walking straight is the fallback and should be small.';
+}
+
+async function runBench(runs) {
+  for (const b of benchBtns) b.disabled = true;
+  copyBtn.disabled = true; benchOut.hidden = false;
+  if (buildOn) setBuild(false);
+  const gl = game.renderer.gl, dbg = gl.getExtension('WEBGL_debug_renderer_info');
+  benchMsg.textContent = 'measuring the display…';
+  const idle = await frameTimes(700);                             // refresh interval, taken while the page is lightly loaded
+  const env = { gpu: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unknown', maxTex: gl.getParameter(gl.MAX_TEXTURE_SIZE), interval: idle.length ? pct(idle, 0.5) : 16.7 };
+  const results = [];
+  for (const [label, factor, agents] of runs) {
+    const say = what => { benchMsg.textContent = `${label} (${results.length + 1}/${runs.length}): ${what}…`; };
+    say('creating'); await wait(60);                              // let the page repaint
+    results.push(await measure(label, factor, agents, say, env));
+    benchOut.value = report(results, env);
+  }
+  if (runs.some(r => r[1])) document.querySelector('#sizes button').click();   // back to the base map
+  benchMsg.textContent = 'done';
+  for (const b of benchBtns) b.disabled = false;
+  copyBtn.disabled = false;
+}
+const STANDARD = [['x1', 1], ['x3', 3], ['x6', 6], ['x10', 10], ['x10 crowd', 10, 8000]];
+benchBtns[0].onclick = () => runBench(STANDARD);
+benchBtns[1].onclick = () => runBench([...STANDARD, ['x100', 100]]);
+benchBtns[2].onclick = () => runBench([['this map', 0]]);        // measure the game as it is, without recreating it
+
+copyBtn.onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(benchOut.value);
+    benchMsg.textContent = 'copied';
+  } catch {                                                      // clipboard refused: select the text so it can be copied by hand
+    benchOut.focus(); benchOut.select();
+    benchMsg.textContent = 'could not copy automatically: the text is selected, copy it by hand';
+  }
+};
+</script>

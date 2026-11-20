@@ -1,0 +1,948 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>GAME_B Agent Matrix</title>
+<style>
+  /* layout: one centred column - isometric map on top, controls, then readout panels that stack on a phone */
+  :root {
+    --bg:#f4f2ea; --ink:#1c1f17; --mid:#6f6a4f; --line:#cfcab6;
+    --tile-empty:#ffffff; --tile-empty2:#f1efe4; --wall-l:#2a2d22; --wall-r:#1c1f17; --tile-wall:#3a3d30; --tile-food:#e6cf8f; --tile-bed:#b9bfa6; --tile-plaza:#d3dcc0;
+    --a-eat:#b08a2e; --a-sleep:#1c1f17; --a-social:#6f8a44; --a-wander:#a9a493;
+    --tile-well:#a9c4cc; --tile-bath:#d9c3cf; --tile-park:#9dbb7a; --a-drink:#3f7f8c; --a-wash:#9a5c7c; --a-play:#b5553a;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+    --bg:#15170f; --ink:#e9e6d6; --mid:#a19c80; --line:#3a3c2e;
+    --tile-empty:#1d2016; --tile-empty2:#23271b; --wall-l:#6a6b58; --wall-r:#4f5042; --tile-wall:#8a8b74; --tile-food:#6b5a22; --tile-bed:#3f4634; --tile-plaza:#2f3b26;
+    --a-eat:#e0b84a; --a-sleep:#f1eede; --a-social:#9fc070; --a-wander:#77735f;
+    --tile-well:#2c4a52; --tile-bath:#4a3542; --tile-park:#3a5228; --a-drink:#6fc0cf; --a-wash:#d79ab8; --a-play:#e8855f; color-scheme: dark } }
+  :root[data-theme="dark"] {
+    --bg:#15170f; --ink:#e9e6d6; --mid:#a19c80; --line:#3a3c2e;
+    --tile-empty:#1d2016; --tile-empty2:#23271b; --wall-l:#6a6b58; --wall-r:#4f5042; --tile-wall:#8a8b74; --tile-food:#6b5a22; --tile-bed:#3f4634; --tile-plaza:#2f3b26;
+    --a-eat:#e0b84a; --a-sleep:#f1eede; --a-social:#9fc070; --a-wander:#77735f;
+    --tile-well:#2c4a52; --tile-bath:#4a3542; --tile-park:#3a5228; --a-drink:#6fc0cf; --a-wash:#d79ab8; --a-play:#e8855f; color-scheme: dark }
+  * { box-sizing: border-box; }
+  [hidden] { display:none !important; }
+  body { margin:0; padding-block:12px;
+         padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+         background:var(--bg); color:var(--ink); font: 13px/1.4 var(--mono); }
+  main { max-width: 768px; margin: 0 auto; }
+  canvas { width:100%; height:auto; display:block; border:1px solid var(--ink);
+           image-rendering: pixelated; touch-action:none; background:var(--tile-empty); }
+  .row { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:8px 0; }
+  button { font:inherit; padding:8px 10px; border:1px solid var(--ink); background:transparent;
+           color:var(--ink); cursor:pointer; }
+  button.on { background:var(--ink); color:var(--bg); }
+  button:focus-visible { outline:2px solid var(--a-eat); outline-offset:2px; }
+  button:disabled { opacity:.5; }
+  input[type=range] { flex:1; min-width:120px; accent-color:var(--ink); }
+  .panels { display:grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap:10px; }
+  .panel { border:1px solid var(--line); padding:8px; min-width:0; overflow-x:auto; }
+  .panel h2 { font-size:12px; margin:0 0 6px; color:var(--mid); font-weight:normal; text-transform:uppercase; letter-spacing:.04em; }
+  table { border-collapse:collapse; width:100%; font:inherit; font-variant-numeric: tabular-nums; }
+  td, th { text-align:right; padding:1px 4px; font-weight:normal; white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; color:var(--mid); }
+  thead th { color:var(--mid); border-bottom:1px solid var(--line); }
+  .sw { display:inline-block; width:9px; height:9px; margin-right:4px; vertical-align:baseline; border:1px solid var(--ink); }
+</style>
+<main>
+  <canvas id="glcv"></canvas>
+  <canvas id="cv" hidden></canvas>
+
+  <div class="row" id="viewRow"></div>
+  <div class="row" id="tools"></div>
+  <div class="row" id="moveRow"></div>
+  <div class="row">
+    <span>agents <b id="nLabel">1000</b></span>
+    <input id="nSlider" type="range" min="100" max="20000" step="100" value="1000">
+    <span id="speeds"></span>
+  </div>
+
+  <div class="panels">
+    <div class="panel"><h2>Cost per frame (ms, smoothed)</h2><table id="perf"></table></div>
+    <div class="panel"><h2>Needs and actions</h2><table id="pop"></table></div>
+    <div class="panel"><h2>Agent types</h2><table id="types"></table></div>
+    <div class="panel" style="grid-column:1/-1">
+      <h2>Benchmark (ms per frame; live fps is the current view)</h2>
+      <button id="benchBtn">run benchmark</button>
+      <table id="benchOut" style="margin-top:6px"></table>
+    </div>
+    <div class="panel" style="grid-column:1/-1"><h2>Action matrix by agent type (rebuilt every 8 ticks)</h2><div class="row" id="typeBtns" style="margin-top:0"></div><table id="mat"></table></div>
+  </div>
+</main>
+
+<script>
+'use strict';
+// ───────────────────────── constants ─────────────────────────
+const W = 96, H = 64, CS = 8, CELLS = W * H, N_MAX = 20000;
+const EMPTY = 0, WALL = 1, INF = 65535;
+
+// One row per need. Each need has one action and one building that satisfies it.
+// Adding a need = one row here + two colour tokens (--tile-<building>, --a-<action>) in the CSS.
+const NEEDS = [
+  { name: 'hunger',  action: 'eat',    building: 'food',  grow: 0.0008, recover: 0.010, weight: 1.2 },
+  { name: 'fatigue', action: 'sleep',  building: 'bed',   grow: 0.0005, recover: 0.006, weight: 1.2 },
+  { name: 'lonely',  action: 'social', building: 'plaza', grow: 0.0006, recover: 0.008, weight: 1.0 },
+  { name: 'thirst',  action: 'drink',  building: 'well',  grow: 0.0011, recover: 0.020, weight: 1.3 },
+  { name: 'dirty',   action: 'wash',   building: 'bath',  grow: 0.0003, recover: 0.008, weight: 0.9 },
+  { name: 'bored',   action: 'play',   building: 'park',  grow: 0.0007, recover: 0.007, weight: 0.9 },
+];
+// One row per agent type. Each type gets its own action matrix.
+//   grow   = how much faster a need builds up for this type
+//   weight = how much more this type cares about a need when choosing what to do
+const TYPES = [
+  { name: 'adult', share: 3, speed: 1.00, grow: {}, weight: {} },
+  { name: 'child', share: 1, speed: 1.25, grow: { fatigue: 1.4, bored: 1.6 }, weight: { bored: 1.5, dirty: 0.5 } },
+  { name: 'elder', share: 1, speed: 0.65, grow: { fatigue: 1.3, bored: 0.6 }, weight: { fatigue: 1.3, lonely: 1.4 } },
+];
+const K = NEEDS.length, T = TYPES.length;
+const A = K + 1, A_WANDER = K;                 // one action per need, plus wander
+const F = 2 * K + 1, F_BIAS = 2 * K;           // features: need², distance to its building, bias
+const MA = F * A;                              // size of one type's matrix
+const tileOf = k => 2 + k;                     // tile id of need k's building
+const ACTION_NAMES = [...NEEDS.map(n => n.action), 'wander'];
+const FEATURE_NAMES = [...NEEDS.map(n => n.name + '²'), ...NEEDS.map(n => 'dist ' + n.building), 'bias'];
+const ACTION_VARS = ACTION_NAMES.map(n => '--a-' + n);
+const TILE_VARS = ['--tile-empty', '--tile-wall', ...NEEDS.map(n => '--tile-' + n.building)];
+const ACTION_COLORS = [], TILE_COLORS = [], PAL = {};
+function loadPalette() {   // canvas colours follow the page theme
+  const cs = getComputedStyle(document.documentElement);
+  ACTION_VARS.forEach((v, i) => ACTION_COLORS[i] = cs.getPropertyValue(v).trim());
+  TILE_VARS.forEach((v, i) => TILE_COLORS[i] = cs.getPropertyValue(v).trim());
+  for (const [k, v] of [['bg', '--bg'], ['ink', '--ink'], ['mid', '--mid'], ['floor2', '--tile-empty2'], ['wallL', '--wall-l'], ['wallR', '--wall-r']])
+    PAL[k] = cs.getPropertyValue(v).trim();
+}
+loadPalette();
+
+const SLOTS_PER_TILE = 3;          // soft capacity of one building tile
+const SPEED = 0.18;                // cells per tick for a type with speed 1
+const STICKY = 0.10;               // bonus for keeping the current action
+const DIST_WEIGHT = -0.25, WANDER_BIAS = 0.12;
+const PACE = 0.4;                  // global tuning knob: how fast all needs build up (1 = agents cannot keep up on this map)
+const TRAIT_SPREAD = 0.3;         // individual variation: each need grows ±30% faster or slower per agent
+const DECIDE_EVERY = 16;           // each agent re-decides every 16 ticks (staggered)
+const MATRIX_EVERY = 8;
+
+// ───────────────────────── world ─────────────────────────
+const tiles = new Uint8Array(CELLS);
+const dist = NEEDS.map(() => new Uint16Array(CELLS));   // one distance field per need's building
+const tileCount = new Int32Array(K);
+const queue = new Int32Array(CELLS);
+
+function rect(x0, y0, w, h, t) {
+  for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) tiles[y * W + x] = t;
+}
+function buildMap() {
+  const b = name => tileOf(NEEDS.findIndex(n => n.building === name));
+  tiles.fill(EMPTY);
+  rect(0, 0, W, 1, WALL); rect(0, H - 1, W, 1, WALL); rect(0, 0, 1, H, WALL); rect(W - 1, 0, 1, H, WALL);
+  rect(30, 8, 1, 30, WALL); rect(60, 26, 1, 30, WALL); rect(30, 44, 20, 1, WALL); rect(44, 16, 30, 1, WALL);
+  rect(8, 8, 4, 4, b('food'));   rect(80, 50, 4, 4, b('food'));
+  rect(76, 6, 8, 3, b('bed'));   rect(8, 52, 8, 2, b('bed'));
+  rect(42, 28, 6, 6, b('plaza'));
+  rect(50, 6, 3, 3, b('well'));  rect(20, 30, 3, 3, b('well'));
+  rect(70, 34, 5, 3, b('bath'));
+  rect(10, 22, 6, 6, b('park')); rect(66, 44, 6, 6, b('park'));
+}
+
+// One distance field per destination type, shared by every agent.
+// Steps cost 2 straight and 3 diagonal, so distances approximate real walking distance in any direction.
+// Diagonal steps may not cut a wall corner. Cells are re-queued whenever a shorter route to them is found.
+const inQueue = new Uint8Array(CELLS);
+const STEP = [-1, 2, 1, 2, -W, 2, W, 2, -W - 1, 3, -W + 1, 3, W - 1, 3, W + 1, 3];
+function buildField(k) {
+  const d = dist[k], tileType = tileOf(k);
+  d.fill(INF);
+  let head = 0, tail = 0, size = 0, count = 0;
+  for (let c = 0; c < CELLS; c++) if (tiles[c] === tileType) { d[c] = 0; queue[tail++] = c; inQueue[c] = 1; size++; count++; }
+  tail %= CELLS;
+  tileCount[k] = count;
+  while (size > 0) {
+    const c = queue[head]; head = (head + 1) % CELLS; size--; inQueue[c] = 0;
+    const here = d[c];
+    for (let s = 0; s < 16; s += 2) {
+      const off = STEP[s], nc = c + off;
+      if (tiles[nc] === WALL) continue;
+      if (s >= 8) {                                // diagonal: both straight neighbours must be open
+        const ox = off < 0 ? (off === -W - 1 ? -1 : 1) : (off === W - 1 ? -1 : 1), oy = off < 0 ? -W : W;
+        if (tiles[c + ox] === WALL || tiles[c + oy] === WALL) continue;
+      }
+      const nd = here + STEP[s + 1];
+      if (nd < d[nc]) {
+        d[nc] = nd;
+        if (!inQueue[nc]) { inQueue[nc] = 1; queue[tail] = nc; tail = (tail + 1) % CELLS; size++; }
+      }
+    }
+  }
+}
+function buildFields() { for (let k = 0; k < K; k++) buildField(k); }
+
+// ───────────────────────── agents (struct of arrays) ─────────────────────────
+let N = 1000;
+const px = new Float32Array(N_MAX), py = new Float32Array(N_MAX);   // position in cells
+const tc = new Int32Array(N_MAX);                                    // target cell index
+const needs = new Float32Array(N_MAX * K);                           // 0 = satisfied, 1 = desperate
+const rate = new Float32Array(N_MAX * K);                            // traits: this agent's growth per tick, per need
+const agentSpeed = new Float32Array(N_MAX);                          // trait: cells per tick
+const type = new Uint8Array(N_MAX);                                  // which matrix this agent uses
+const action = new Uint8Array(N_MAX);
+const using = new Uint8Array(N_MAX);
+const users = new Int32Array(K);                                     // agents currently using each building type
+
+let seed = 12345;
+function rnd() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+
+const TYPE_PICK = [];
+TYPES.forEach((t, k) => { for (let n = 0; n < t.share; n++) TYPE_PICK.push(k); });
+
+function spawn(i) {
+  let c;
+  do { c = (rnd() * CELLS) | 0; } while (tiles[c] === WALL);
+  tc[i] = c; px[i] = (c % W) + 0.5; py[i] = ((c / W) | 0) + 0.5;
+  const t = TYPE_PICK[i % TYPE_PICK.length], ty = TYPES[t];
+  type[i] = t;
+  agentSpeed[i] = SPEED * ty.speed * (0.9 + rnd() * 0.2);
+  for (let k = 0; k < K; k++) {
+    needs[i * K + k] = rnd() * 0.7;
+    rate[i * K + k] = PACE * NEEDS[k].grow * (ty.grow[NEEDS[k].name] || 1) * (1 + (rnd() * 2 - 1) * TRAIT_SPREAD);
+  }
+  action[i] = A_WANDER; using[i] = 0;
+  vx[i] = vy[i] = 0; settle[i] = 0;
+}
+
+// ───────────────────────── the action matrices ─────────────────────────
+// scores[agent][action] = Σ_f features[agent][f] * M[type of agent][f][action]
+// BASE holds each type's design values; M is BASE adjusted for the current state of the world.
+const BASE = new Float32Array(T * MA), M = new Float32Array(T * MA);
+const RECOVER = Float32Array.from(NEEDS, n => n.recover);
+const saturation = new Float32Array(K);
+for (let t = 0; t < T; t++) {
+  for (let k = 0; k < K; k++) {
+    BASE[t * MA + k * A + k] = NEEDS[k].weight * (TYPES[t].weight[NEEDS[k].name] || 1);   // need² → its action
+    BASE[t * MA + (K + k) * A + k] = DIST_WEIGHT;                                          // far building → less appeal
+  }
+  BASE[t * MA + F_BIAS * A + A_WANDER] = WANDER_BIAS;
+}
+
+// World state → matrices. Crowded buildings lower their own pull (a price signal),
+// which is what stops a thousand agents from all choosing the same thing.
+function rebuildMatrix() {
+  M.set(BASE);
+  for (let k = 0; k < K; k++) {
+    const cap = tileCount[k] * SLOTS_PER_TILE;
+    const sat = cap > 0 ? Math.min(1, users[k] / cap) : 1;
+    saturation[k] = sat;
+    for (let t = 0; t < T; t++) M[t * MA + k * A + k] *= 1 - 0.6 * sat;
+  }
+}
+
+const feat = new Float32Array(F);
+function decide(i) {
+  const c = tc[i], n = i * K, m = type[i] * MA;
+  for (let k = 0; k < K; k++) {
+    const v = needs[n + k], d = dist[k][c];
+    feat[k] = v * v;
+    feat[K + k] = d === INF ? 8 : Math.min(1, d / 256);
+  }
+  feat[F_BIAS] = 1;
+  let best = 0, bestScore = -Infinity;
+  const cur = action[i];
+  for (let a = 0; a < A; a++) {
+    let sc = a === cur ? STICKY : 0;
+    for (let f = 0; f < F; f++) sc += feat[f] * M[m + f * A + a];
+    if (sc > bestScore) { bestScore = sc; best = a; }
+  }
+  action[i] = best;
+}
+
+// ───────────────────────── simulation tick ─────────────────────────
+let tick = 0;
+const NB = [-1, 1, -W, W];
+
+function pickNext(i, c) {
+  const a = action[i], start = (rnd() * 4) | 0;
+  if (a < K) {
+    const d = dist[a], here = d[c];
+    if (here === 0) { using[i] = 1; return; }
+    if (here !== INF) {
+      for (let k = 0; k < 4; k++) {
+        const nc = c + NB[(start + k) & 3];
+        if (d[nc] < here) { tc[i] = nc; return; }
+      }
+    }
+  }
+  for (let k = 0; k < 4; k++) { // wander, or target unreachable
+    const nc = c + NB[(start + k) & 3];
+    if (nc >= 0 && nc < CELLS && tiles[nc] !== WALL) { tc[i] = nc; return; }
+  }
+}
+
+function stepDecide() {
+  const phase = tick % DECIDE_EVERY;
+  for (let i = phase; i < N; i += DECIDE_EVERY) if (!using[i]) decide(i);
+}
+
+function stepMoveGrid() {
+  users.fill(0);
+  for (let i = 0; i < N; i++) {
+    const n = i * K;
+    for (let k = 0; k < K; k++) { const v = needs[n + k] + rate[n + k]; needs[n + k] = v > 1 ? 1 : v; }
+
+    if (using[i]) {
+      const a = action[i];
+      if (dist[a][tc[i]] !== 0) { using[i] = 0; decide(i); continue; } // building was removed
+      users[a]++;
+      const v = needs[n + a] - RECOVER[a] - rate[n + a];
+      if (v <= 0) { needs[n + a] = 0; using[i] = 0; decide(i); pickNext(i, tc[i]); }
+      else needs[n + a] = v;
+      continue;
+    }
+
+    const c = tc[i], sp = agentSpeed[i];
+    const dx = (c % W) + 0.5 - px[i], dy = ((c / W) | 0) + 0.5 - py[i];
+    const d = Math.abs(dx) + Math.abs(dy);
+    if (d <= sp) { px[i] += dx; py[i] += dy; pickNext(i, c); }
+    else { px[i] += dx / d * sp; py[i] += dy / d * sp; }
+  }
+}
+
+// ───────────────────────── free movement ─────────────────────────
+// Same distance fields, but agents are no longer tied to cell centres:
+//   1. steer downhill on the field (direction blended from the four neighbouring cells),
+//   2. get pushed apart by nearby agents (found through a per-cell bucket list, rebuilt every tick),
+//   3. slide along walls instead of entering them.
+let freeMove = true;
+const vx = new Float32Array(N_MAX), vy = new Float32Array(N_MAX);   // current velocity, cells per tick
+const settle = new Uint8Array(N_MAX);                                // ticks left to walk further into a building
+const cellStart = new Int32Array(CELLS + 1), cellFill = new Int32Array(CELLS), cellItems = new Int32Array(N_MAX);
+const SEP_R = 0.7, SEP_R2 = SEP_R * SEP_R;     // personal space, in cells
+const SEP_PUSH = 1.2;                          // how hard neighbours push, relative to walking speed
+const TURN = 0.25;                             // 1 = instant turns, lower = smoother curves
+const MAX_NEIGHBOURS = 24;                     // cap per agent so a dense crowd cannot blow up the cost
+
+function stepMoveFree() {
+  users.fill(0);
+  cellStart.fill(0);
+  for (let i = 0; i < N; i++) { const c = (py[i] | 0) * W + (px[i] | 0); tc[i] = c; cellStart[c + 1]++; }
+  for (let c = 0; c < CELLS; c++) { cellStart[c + 1] += cellStart[c]; cellFill[c] = cellStart[c]; }
+  for (let i = 0; i < N; i++) cellItems[cellFill[tc[i]]++] = i;
+
+  for (let i = 0; i < N; i++) {
+    const n = i * K;
+    for (let k = 0; k < K; k++) { const v = needs[n + k] + rate[n + k]; needs[n + k] = v > 1 ? 1 : v; }
+    const c = tc[i], a = action[i];
+
+    if (using[i]) {
+      if (dist[a][c] !== 0) { using[i] = 0; decide(i); continue; }   // building was removed
+      users[a]++;
+      const v = needs[n + a] - RECOVER[a] - rate[n + a];
+      if (v <= 0) { needs[n + a] = 0; using[i] = 0; decide(i); }
+      else needs[n + a] = v;
+      continue;
+    }
+
+    const sp = agentSpeed[i], x = px[i], y = py[i], inWall = tiles[c] === WALL;
+    let dx = 0, dy = 0, arrived = false;
+    if (a < K && !inWall) {
+      const d = dist[a], here = d[c];
+      if (here === 0) arrived = true;
+      else if (here !== INF) {                     // downhill direction; walls count as uphill
+        const up = here + 2, l = d[c - 1], r = d[c + 1], u = d[c - W], dn = d[c + W];
+        dx = (l === INF ? up : l) - (r === INF ? up : r);
+        dy = (u === INF ? up : u) - (dn === INF ? up : dn);
+      }
+    }
+    if (arrived) {                                 // on the building: walk in a little further, then stop and use it
+      if (settle[i] === 0) settle[i] = 1 + ((rnd() * 14) | 0);
+      if (--settle[i] === 0) { using[i] = 1; vx[i] = vy[i] = 0; continue; }
+      dx = vx[i]; dy = vy[i];
+    } else settle[i] = 0;
+    if (dx === 0 && dy === 0) {                    // wandering, or nowhere to go: keep heading, sometimes turn
+      dx = vx[i]; dy = vy[i];
+      if ((dx === 0 && dy === 0) || rnd() < 0.02) { const ang = rnd() * 6.2832; dx = Math.cos(ang); dy = Math.sin(ang); }
+    }
+    const len = Math.sqrt(dx * dx + dy * dy);
+    dx = dx / len * sp; dy = dy / len * sp;
+
+    let sx = 0, sy = 0, seen = 0;                  // separation from neighbours in the 3×3 cells around
+    if (!inWall) for (let row = -W; row <= W && seen < MAX_NEIGHBOURS; row += W) for (let o = -1; o <= 1; o++) {
+      const cc = c + row + o;
+      for (let q = cellStart[cc], e = cellStart[cc + 1]; q < e && seen < MAX_NEIGHBOURS; q++) {
+        const j = cellItems[q];
+        if (j === i) continue;
+        const ex = x - px[j], ey = y - py[j], d2 = ex * ex + ey * ey;
+        if (d2 >= SEP_R2) continue;
+        seen++;
+        if (d2 > 1e-6) {
+          const dd = Math.sqrt(d2), w = (1 - dd / SEP_R) / dd * (using[j] ? 0.35 : 1);   // seated agents push less
+          sx += ex * w; sy += ey * w;
+        } else sx += i > j ? 0.3 : -0.3;           // exactly on top of each other: split deterministically
+      }
+    }
+
+    let nvx = vx[i] + (dx + sx * sp * SEP_PUSH - vx[i]) * TURN, nvy = vy[i] + (dy + sy * sp * SEP_PUSH - vy[i]) * TURN;
+    const sl = nvx * nvx + nvy * nvy, top = sp * 1.3;
+    if (sl > top * top) { const f = top / Math.sqrt(sl); nvx *= f; nvy *= f; }
+
+    let nx = Math.min(W - 1.01, Math.max(1, x + nvx)), ny = y;       // move one axis at a time = slide along walls
+    if (!inWall) {
+      const home = tileOf(a);                      // while settling, do not walk back off the building
+      let t = tiles[(y | 0) * W + (nx | 0)];
+      if (t === WALL || (arrived && t !== home)) { nx = x; nvx = 0; }
+      ny = Math.min(H - 1.01, Math.max(1, y + nvy));
+      t = tiles[(ny | 0) * W + (nx | 0)];
+      if (t === WALL || (arrived && t !== home)) { ny = y; nvy = 0; }
+    } else ny = Math.min(H - 1.01, Math.max(1, y + nvy));            // walled in by an edit: walk out freely
+    px[i] = nx; py[i] = ny; vx[i] = nvx; vy[i] = nvy;
+  }
+}
+
+function stepMove() { if (freeMove) stepMoveFree(); else stepMoveGrid(); }
+function setMove(free) {
+  freeMove = free;
+  setJitter(!free);                                // grid mode fakes a spread inside the cell; free mode is already spread
+  for (let i = 0; i < N_MAX; i++) tc[i] = (py[i] | 0) * W + (px[i] | 0);
+}
+
+// ───────────────────────── rendering ─────────────────────────
+// The simulation never sees any of this: isometric is only a projection of grid cells.
+//   world x = (x - y) * HW + ISO_OX      world y = (x + y) * HH
+const cv = document.getElementById('cv');
+const CW = 768, CH = 512;
+cv.width = CW; cv.height = CH;
+const ctx = cv.getContext('2d', { alpha: false });
+function makeCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+
+const TW = 16, TH = 8, HW = TW / 2, HH = TH / 2, WALL_H = 10;     // 2:1 pixel-art tiles
+const ISO_W = (W + H) * HW, ISO_H = (W + H) * HH, ISO_OX = H * HW, D = W + H;
+const FIT_ZOOM = Math.min(CW / ISO_W, CH / ISO_H), ZOOM_MIN = 0.5, ZOOM_MAX = 6, LOD_ZOOM = 1.5;
+const cam = { x: ISO_W / 2, y: ISO_H / 2, zoom: FIT_ZOOM };
+let view = 'iso';
+let atlasDirty = true, groundDirty = true;   // tell the WebGL renderer to re-upload its textures
+
+const flatLayer = makeCanvas(W * CS, H * CS), fctx = flatLayer.getContext('2d', { alpha: false });
+const groundLayer = makeCanvas(ISO_W, ISO_H), gctx = groundLayer.getContext('2d', { alpha: false });
+const wallsByDepth = Array.from({ length: D }, () => []);
+
+// Placeholder sprites, drawn once per theme: a wall block and a tall thin figure (2 walk frames per action).
+const SPR_W = 6, SPR_H = 14;
+function poly(g, pts) {
+  g.beginPath(); g.moveTo(pts[0], pts[1]);
+  for (let k = 2; k < pts.length; k += 2) g.lineTo(pts[k], pts[k + 1]);
+  g.closePath(); g.fill();
+}
+// All sprites live in one atlas canvas: one source texture lets the browser batch the draws.
+const AGENT_ROW = SPR_H + 1;
+const atlas = makeCanvas(TW + 1 + A * 2 * (SPR_W + 1), Math.max(TH + WALL_H, T * AGENT_ROW));
+const AGENT_X0 = TW + 1, AGENT_STEP = SPR_W + 1;
+function buildSprites() {
+  atlasDirty = true;
+  const w = atlas.getContext('2d');
+  w.clearRect(0, 0, atlas.width, atlas.height);
+  w.fillStyle = PAL.wallL; poly(w, [0, HH, HW, TH, HW, TH + WALL_H, 0, HH + WALL_H]);
+  w.fillStyle = PAL.wallR; poly(w, [HW, TH, TW, HH, TW, HH + WALL_H, HW, TH + WALL_H]);
+  w.fillStyle = TILE_COLORS[WALL]; poly(w, [HW, 0, TW, HH, HW, TH, 0, HH]);
+  for (let t = 0; t < T; t++) for (let a = 0; a < A; a++) for (let f = 0; f < 2; f++) {
+    const o = AGENT_X0 + (a * 2 + f) * AGENT_STEP, y = t * AGENT_ROW;
+    const small = TYPES[t].name === 'child';                       // children are shorter, elders grey-haired
+    const top = small ? 4 : 0, bodyH = small ? 4 : 6, legH = small ? 3 : 5, ly = y + top + 3 + bodyH;
+    w.fillStyle = TYPES[t].name === 'elder' ? PAL.mid : PAL.ink; w.fillRect(o + 2, y + top, 2, 2);   // head
+    w.fillStyle = ACTION_COLORS[a]; w.fillRect(o + 1, y + top + 3, 4, bodyH);                        // body = current action
+    w.fillStyle = PAL.ink;                                                                           // legs
+    if (f === 1) { w.fillRect(o + 2, ly, 1, legH); w.fillRect(o + 3, ly, 1, legH - 1); }
+    else { w.fillRect(o + 1, ly, 1, legH); w.fillRect(o + 4, ly, 1, legH); }
+  }
+}
+
+function quad(g, x, y, w, h) {   // a w×h block of cells as an isometric parallelogram
+  poly(g, [(x - y) * HW + ISO_OX, (x + y) * HH, (x + w - y) * HW + ISO_OX, (x + w + y) * HH,
+           (x + w - y - h) * HW + ISO_OX, (x + w + y + h) * HH, (x - y - h) * HW + ISO_OX, (x + y + h) * HH]);
+}
+function drawTiles() {
+  groundDirty = true;
+  for (let c = 0; c < CELLS; c++) {
+    fctx.fillStyle = TILE_COLORS[tiles[c]];
+    fctx.fillRect((c % W) * CS, ((c / W) | 0) * CS, CS, CS);
+  }
+  gctx.fillStyle = PAL.bg; gctx.fillRect(0, 0, ISO_W, ISO_H);
+  gctx.fillStyle = TILE_COLORS[EMPTY]; quad(gctx, 0, 0, W, H);
+  gctx.fillStyle = PAL.floor2;
+  for (let y = 0; y < H; y += 4) for (let x = 0; x < W; x += 4) if (((x + y) >> 2) & 1) quad(gctx, x, y, 4, 4);
+  for (const row of wallsByDepth) row.length = 0;
+  for (let c = 0; c < CELLS; c++) {
+    const t = tiles[c], x = c % W, y = (c / W) | 0;
+    if (t === WALL) wallsByDepth[x + y].push(c);
+    else if (t !== EMPTY) { gctx.fillStyle = TILE_COLORS[t]; quad(gctx, x, y, 1, 1); }
+  }
+}
+
+function renderFlat() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.drawImage(flatLayer, 0, 0);
+  for (let a = 0; a < A; a++) {
+    ctx.fillStyle = ACTION_COLORS[a];
+    for (let i = 0; i < N; i++) if (action[i] === a) ctx.fillRect(px[i] * CS - 1.5, py[i] * CS - 2.5, 3, 5);
+  }
+}
+
+// Fixed per-agent offset inside the cell, so a crowd on one tile does not collapse into one sprite.
+const jx = new Float32Array(N_MAX), jy = new Float32Array(N_MAX);
+function setJitter(on) {
+  for (let i = 0; i < N_MAX; i++) { jx[i] = on ? ((i * 37) % 9 - 4) / 12 : 0; jy[i] = on ? ((i * 53) % 9 - 4) / 12 : 0; }
+}
+const depthStart = new Int32Array(D + 1), depthFill = new Int32Array(D), bucket = new Uint16Array(N_MAX), order = new Int32Array(N_MAX);
+
+function renderIso() {
+  const z = cam.zoom, ox = Math.round(CW / 2 - cam.x * z), oy = Math.round(CH / 2 - cam.y * z);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = PAL.bg; ctx.fillRect(0, 0, CW, CH);
+  ctx.setTransform(z, 0, 0, z, ox, oy);
+  ctx.imageSmoothingEnabled = z < 1;
+  ctx.drawImage(groundLayer, 0, 0);
+
+  // Back-to-front order: counting sort of agents into diagonal rows (depth = x + y). O(N), no real sort.
+  depthStart.fill(0);
+  for (let i = 0; i < N; i++) {
+    let b = (px[i] + jx[i] + py[i] + jy[i] - 0.5) | 0;
+    b = b < 0 ? 0 : b >= D ? D - 1 : b;
+    bucket[i] = b; depthStart[b + 1]++;
+  }
+  for (let d = 0; d < D; d++) { depthStart[d + 1] += depthStart[d]; depthFill[d] = depthStart[d]; }
+  for (let i = 0; i < N; i++) order[depthFill[bucket[i]]++] = i;
+
+  // Only rows and sprites inside the camera rectangle are drawn.
+  const vx0 = -ox / z - TW, vx1 = (CW - ox) / z + TW, vy0 = -oy / z - TH, vy1 = (CH - oy) / z + SPR_H + WALL_H;
+  const d0 = Math.max(0, Math.floor(vy0 / HH) - 2), d1 = Math.min(D - 1, Math.ceil(vy1 / HH) + 1);
+  const walk = tick >> 2;
+  // Level of detail: zoomed out, a figure is only ~4 screen pixels wide, so three plain rectangles
+  // stand in for the sprite. They cost far less than scaled sprite draws and look the same at that size.
+  const lod = z < LOD_ZOOM;
+  // In LOD mode everything is drawn in whole screen pixels: no transform, no anti-aliasing work.
+  const bw = Math.max(2, Math.round(4 * z)), bh = Math.max(2, Math.round(6 * z)), hw = Math.max(1, Math.round(2 * z)),
+        hh = hw, lh = Math.max(1, Math.round(5 * z)), ww = Math.ceil(TW * z), wh = Math.ceil((TH + WALL_H) * z);
+  if (lod) { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.imageSmoothingEnabled = false; }
+  for (let d = d0; d <= d1; d++) {
+    const ws = wallsByDepth[d];
+    for (let k = 0; k < ws.length; k++) {
+      const c = ws[k], x = c % W, y = (c / W) | 0, wx = (x - y) * HW + ISO_OX;
+      if (wx <= vx0 || wx >= vx1) continue;
+      if (lod) ctx.drawImage(atlas, 0, 0, TW, TH + WALL_H, ((wx - HW) * z + ox) | 0, ((d * HH - WALL_H) * z + oy) | 0, ww, wh);
+      else ctx.drawImage(atlas, 0, 0, TW, TH + WALL_H, wx - HW, d * HH - WALL_H, TW, TH + WALL_H);
+    }
+    if (lod) {
+      const k0 = depthStart[d], k1 = depthStart[d + 1];
+      let cur = -1;
+      for (let k = k0; k < k1; k++) {                      // bodies, coloured by action
+        const i = order[k], x = px[i] + jx[i], y = py[i] + jy[i];
+        const ax = (x - y) * HW + ISO_OX, ay = (x + y) * HH;
+        if (ax < vx0 || ax > vx1 || ay < vy0 || ay > vy1) continue;
+        if (action[i] !== cur) { cur = action[i]; ctx.fillStyle = ACTION_COLORS[cur]; }
+        ctx.fillRect(((ax * z + ox) | 0) - (bw >> 1), ((ay * z + oy) | 0) - lh - bh, bw, bh);
+      }
+      ctx.fillStyle = PAL.ink;
+      for (let k = k0; k < k1; k++) {                      // heads and legs
+        const i = order[k], x = px[i] + jx[i], y = py[i] + jy[i];
+        const ax = (x - y) * HW + ISO_OX, ay = (x + y) * HH;
+        if (ax < vx0 || ax > vx1 || ay < vy0 || ay > vy1) continue;
+        const sx = ((ax * z + ox) | 0) - (hw >> 1), sy = (ay * z + oy) | 0;
+        ctx.fillRect(sx, sy - lh - bh - hh - 1, hw, hh); ctx.fillRect(sx, sy - lh, hw, lh);
+      }
+      continue;
+    }
+    for (let k = depthStart[d], e = depthStart[d + 1]; k < e; k++) {
+      const i = order[k], x = px[i] + jx[i], y = py[i] + jy[i];
+      const ax = (x - y) * HW + ISO_OX, ay = (x + y) * HH;
+      if (ax < vx0 || ax > vx1 || ay < vy0 || ay > vy1) continue;
+      const f = using[i] ? 0 : (walk + i) & 1;
+      ctx.drawImage(atlas, AGENT_X0 + (action[i] * 2 + f) * AGENT_STEP, type[i] * AGENT_ROW, SPR_W, SPR_H,
+                    Math.round(ax - SPR_W / 2), Math.round(ay - SPR_H), SPR_W, SPR_H);
+    }
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+// ───────────────────────── WebGL renderer ─────────────────────────
+// Every wall and agent is one instance of the same quad, all sent in a single draw call.
+// The depth buffer does the back-to-front ordering, so nothing is sorted on the CPU.
+// Swapping in real art later means replacing the atlas image and the per-instance atlas rectangles.
+const glcv = document.getElementById('glcv');
+glcv.width = CW; glcv.height = CH;
+const INST = 7;                                   // x, y, w, h, atlasX, atlasY, depthKey
+const inst = new Float32Array((1 + CELLS + N_MAX) * INST);
+let wallCount = 0;
+function hexRGB(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]; }
+
+function initGL() {
+  const gl = glcv.getContext('webgl2', { alpha: false, antialias: false, depth: true, powerPreference: 'high-performance' });
+  if (!gl) return null;
+  const VS = `#version 300 es
+layout(location=0) in vec2 a_corner;
+layout(location=1) in vec2 a_pos;
+layout(location=2) in vec2 a_size;
+layout(location=3) in vec2 a_uv;
+layout(location=4) in float a_key;
+uniform vec3 u_cam;    // zoom, screen offset x, y
+uniform vec2 u_view;   // canvas size
+uniform vec2 u_tex;    // texture size
+uniform float u_zmax;
+out vec2 v_uv;
+void main() {
+  vec2 scr = floor(a_pos * u_cam.x + u_cam.yz + 0.5) + a_corner * a_size * u_cam.x;
+  gl_Position = vec4(scr.x / u_view.x * 2.0 - 1.0, 1.0 - scr.y / u_view.y * 2.0, 1.0 - 2.0 * a_key / u_zmax, 1.0);
+  v_uv = (a_uv + a_corner * a_size) / u_tex;
+}`;
+  const FS = `#version 300 es
+precision mediump float;
+uniform sampler2D u_sampler;
+in vec2 v_uv;
+out vec4 o;
+void main() {
+  vec4 c = texture(u_sampler, v_uv);
+  if (c.a < 0.5) discard;            // hard-edged pixel art: no blending, so the depth buffer just works
+  o = vec4(c.rgb / c.a, 1.0);
+}`;
+  const sh = (type, src) => {
+    const x = gl.createShader(type); gl.shaderSource(x, src); gl.compileShader(x);
+    if (!gl.getShaderParameter(x, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(x));
+    return x;
+  };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  const corners = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, corners);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]), gl.STATIC_DRAW);
+  const ibuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, ibuf);
+  gl.bufferData(gl.ARRAY_BUFFER, inst.byteLength, gl.DYNAMIC_DRAW);
+  const makeVAO = firstInstance => {
+    const v = gl.createVertexArray(); gl.bindVertexArray(v);
+    gl.bindBuffer(gl.ARRAY_BUFFER, corners);
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, ibuf);
+    let off = firstInstance * INST * 4;
+    for (const [loc, size] of [[1, 2], [2, 2], [3, 2], [4, 1]]) {
+      gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, INST * 4, off);
+      gl.vertexAttribDivisor(loc, 1); off += size * 4;
+    }
+    return v;
+  };
+  const makeTex = mag => {
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, mag);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  };
+  const u = n => gl.getUniformLocation(prog, n);
+  return { gl, ibuf, vaoGround: makeVAO(0), vaoSprites: makeVAO(1), atlasTex: makeTex(gl.NEAREST), groundTex: makeTex(gl.LINEAR),
+           uCam: u('u_cam'), uView: u('u_view'), uTex: u('u_tex'), uZmax: u('u_zmax') };
+}
+let glr = null;
+try { glr = initGL(); } catch (err) { console.warn('WebGL2 unavailable, falling back to the 2D canvas', err); }
+
+function renderGL() {
+  const gl = glr.gl;
+  if (atlasDirty) {
+    gl.bindTexture(gl.TEXTURE_2D, glr.atlasTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
+    atlasDirty = false;
+  }
+  if (groundDirty) {                               // map edited: new ground texture, new wall instances
+    gl.bindTexture(gl.TEXTURE_2D, glr.groundTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, groundLayer);
+    inst.set([0, 0, ISO_W, ISO_H, 0, 0, 0], 0);    // instance 0 is the ground quad
+    let o = INST; wallCount = 0;
+    for (let d = 0; d < D; d++) for (const c of wallsByDepth[d]) {
+      const x = c % W, y = (c / W) | 0;
+      inst[o] = (x - y) * HW + ISO_OX - HW; inst[o + 1] = d * HH - WALL_H; inst[o + 2] = TW; inst[o + 3] = TH + WALL_H;
+      inst[o + 4] = 0; inst[o + 5] = 0; inst[o + 6] = (d + 1) * HH;
+      o += INST; wallCount++;
+    }
+    groundDirty = false;
+  }
+  let o = (1 + wallCount) * INST;
+  const walk = tick >> 2;
+  for (let i = 0; i < N; i++) {                    // the only per-agent CPU work: 7 floats
+    const x = px[i] + jx[i], y = py[i] + jy[i], ay = (x + y) * HH;
+    inst[o] = (x - y) * HW + ISO_OX - SPR_W / 2; inst[o + 1] = ay - SPR_H; inst[o + 2] = SPR_W; inst[o + 3] = SPR_H;
+    inst[o + 4] = AGENT_X0 + (action[i] * 2 + (using[i] ? 0 : (walk + i) & 1)) * AGENT_STEP; inst[o + 5] = type[i] * AGENT_ROW;
+    inst[o + 6] = ay;                              // feet lower on screen = closer to the camera
+    o += INST;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, glr.ibuf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst, 0, o);
+
+  const z = cam.zoom, bg = hexRGB(PAL.bg);
+  gl.viewport(0, 0, CW, CH);
+  gl.clearColor(bg[0], bg[1], bg[2], 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.uniform3f(glr.uCam, z, Math.round(CW / 2 - cam.x * z), Math.round(CH / 2 - cam.y * z));
+  gl.uniform2f(glr.uView, CW, CH);
+  gl.uniform1f(glr.uZmax, ISO_H + TH);
+
+  gl.disable(gl.DEPTH_TEST);
+  gl.bindTexture(gl.TEXTURE_2D, glr.groundTex); gl.uniform2f(glr.uTex, ISO_W, ISO_H);
+  gl.bindVertexArray(glr.vaoGround); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, 1);
+
+  gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
+  gl.bindTexture(gl.TEXTURE_2D, glr.atlasTex); gl.uniform2f(glr.uTex, atlas.width, atlas.height);
+  gl.bindVertexArray(glr.vaoSprites); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, wallCount + N);
+}
+
+function render() {
+  if (view === 'flat') renderFlat();
+  else if (view === 'iso' && glr) renderGL();
+  else renderIso();
+}
+function setView(v) {
+  view = v;
+  const useGL = v === 'iso' && !!glr;
+  glcv.hidden = !useGL; cv.hidden = useGL;
+}
+function onStage(type, fn, opt) { cv.addEventListener(type, fn, opt); glcv.addEventListener(type, fn, opt); }
+
+// ───────────────────────── UI ─────────────────────────
+const PAN = -1;
+let tool = PAN, speed = 1, dirty = false;
+function group(el, items, isOn, pick) {       // a row of mutually exclusive buttons
+  const btns = [];
+  for (const [label, value] of items) {
+    const b = document.createElement('button');
+    b.innerHTML = label; b.className = isOn(value) ? 'on' : '';
+    b.onclick = () => { pick(value); for (const x of btns) x.className = ''; b.className = 'on'; };
+    btns.push(b); el.append(b, ' ');
+  }
+}
+const viewRow = document.getElementById('viewRow');
+viewRow.append('view: ');
+group(viewRow, [[glr ? 'isometric (WebGL)' : 'isometric', 'iso'], ...(glr ? [['isometric (2D canvas)', 'iso2d']] : []), ['top-down', 'flat']],
+      v => v === view, setView);
+function clampCam() { cam.x = Math.min(ISO_W, Math.max(0, cam.x)); cam.y = Math.min(ISO_H, Math.max(0, cam.y)); }
+function zoomAt(sx, sy, factor) {             // keep the world point under (sx, sy) fixed
+  const z0 = cam.zoom, z1 = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z0 * factor));
+  cam.x += (sx - CW / 2) * (1 / z0 - 1 / z1); cam.y += (sy - CH / 2) * (1 / z0 - 1 / z1);
+  cam.zoom = z1; clampCam();
+}
+for (const [label, fn] of [['zoom −', () => zoomAt(CW / 2, CH / 2, 1 / 1.5)], ['zoom +', () => zoomAt(CW / 2, CH / 2, 1.5)],
+                           ['fit', () => { cam.x = ISO_W / 2; cam.y = ISO_H / 2; cam.zoom = FIT_ZOOM; }]]) {
+  const b = document.createElement('button'); b.textContent = label; b.onclick = fn; viewRow.append(b, ' ');
+}
+
+const toolsEl = document.getElementById('tools');
+toolsEl.append('tool: ');
+group(toolsEl, [['pan', PAN], ['wall', WALL], ...NEEDS.map((n, k) => [n.building, tileOf(k)]), ['erase', EMPTY]]
+  .map(([n, t]) => [t === PAN ? n : `<span class="sw" style="background:var(${TILE_VARS[t]})"></span>${n}`, t]),
+  t => t === tool, t => { tool = t; });
+group(document.getElementById('speeds'), [['pause', 0], ['1×', 1], ['4×', 4], ['16×', 16]], s => s === speed, s => { speed = s; });
+const moveRow = document.getElementById('moveRow');
+moveRow.append('movement: ');
+group(moveRow, [['free (steering + separation)', true], ['grid (cell to cell)', false]], v => v === freeMove, setMove);
+
+const nSlider = document.getElementById('nSlider'), nLabel = document.getElementById('nLabel');
+nSlider.oninput = () => {
+  const n = +nSlider.value;
+  for (let i = N; i < n; i++) spawn(i);
+  N = n; nLabel.textContent = n;
+};
+
+function canvasXY(e) {
+  const r = e.currentTarget.getBoundingClientRect();
+  return [(e.clientX - r.left) / r.width * CW, (e.clientY - r.top) / r.height * CH];
+}
+function cellAt(sx, sy) {                     // inverse projection: screen → grid cell
+  if (view === 'flat') return [(sx / CS) | 0, (sy / CS) | 0];
+  const a = ((sx - CW / 2) / cam.zoom + cam.x - ISO_OX) / HW, b = ((sy - CH / 2) / cam.zoom + cam.y) / HH;
+  return [Math.floor((a + b) / 2), Math.floor((b - a) / 2)];
+}
+function paint(sx, sy) {
+  const [x, y] = cellAt(sx, sy);
+  if (x < 1 || y < 1 || x >= W - 1 || y >= H - 1) return;   // keep the border wall
+  const c = y * W + x;
+  if (tiles[c] !== tool) { tiles[c] = tool; dirty = true; }
+}
+const pointers = new Map();
+let pinch = 0;
+const pinchDist = () => { const [p, q] = [...pointers.values()]; return Math.hypot(p[0] - q[0], p[1] - q[1]) || 1; };
+onStage('pointerdown', e => {
+  const p = canvasXY(e);
+  pointers.set(e.pointerId, p); e.currentTarget.setPointerCapture(e.pointerId);
+  if (pointers.size === 2) pinch = pinchDist();
+  else if (pointers.size === 1 && tool !== PAN) paint(p[0], p[1]);
+});
+onStage('pointermove', e => {
+  const prev = pointers.get(e.pointerId);
+  if (!prev) return;
+  const p = canvasXY(e), dx = p[0] - prev[0], dy = p[1] - prev[1];
+  pointers.set(e.pointerId, p);
+  if (pointers.size === 2 && view !== 'flat') {              // two fingers: pinch-zoom and pan together
+    const [q, r] = [...pointers.values()], d = pinchDist();
+    cam.x -= dx / cam.zoom / 2; cam.y -= dy / cam.zoom / 2;
+    zoomAt((q[0] + r[0]) / 2, (q[1] + r[1]) / 2, d / pinch); pinch = d;
+  } else if (pointers.size === 1) {
+    if (tool !== PAN) paint(p[0], p[1]);
+    else if (view !== 'flat') { cam.x -= dx / cam.zoom; cam.y -= dy / cam.zoom; clampCam(); }
+  }
+});
+const drop = e => { pointers.delete(e.pointerId); };
+onStage('pointerup', drop);
+onStage('pointercancel', drop);
+onStage('wheel', e => {
+  if (view === 'flat') return;
+  e.preventDefault();
+  const p = canvasXY(e); zoomAt(p[0], p[1], e.deltaY < 0 ? 1.15 : 1 / 1.15);
+}, { passive: false });
+
+// ───────────────────────── stats ─────────────────────────
+const perf = { decide: 0, move: 0, matrix: 0, fields: 0, render: 0, frame: 16.7 };
+const ema = (k, v) => { perf[k] += (v - perf[k]) * 0.05; };
+const perfEl = document.getElementById('perf'), popEl = document.getElementById('pop'), matEl = document.getElementById('mat');
+
+let showType = 0;
+group(document.getElementById('typeBtns'), TYPES.map((t, k) => [t.name, k]), k => k === showType, k => { showType = k; updatePanels(); });
+const typesEl = document.getElementById('types');
+const describe = ty => [...Object.entries(ty.grow).map(([n, v]) => `${n} builds ×${v}`),
+                        ...Object.entries(ty.weight).map(([n, v]) => `cares ×${v} about ${n}`)].join(', ') || 'baseline';
+
+function updatePanels() {
+  const sim = perf.decide + perf.move + perf.matrix;
+  perfEl.innerHTML =
+    `<tr><td>decide (matrix × state)</td><td>${perf.decide.toFixed(3)}</td></tr>` +
+    `<tr><td>move + needs</td><td>${perf.move.toFixed(3)}</td></tr>` +
+    `<tr><td>rebuild matrices</td><td>${perf.matrix.toFixed(4)}</td></tr>` +
+    `<tr><td>render</td><td>${perf.render.toFixed(3)}</td></tr>` +
+    `<tr><td>flow fields (last edit)</td><td>${perf.fields.toFixed(3)}</td></tr>` +
+    `<tr><td>sim total / 16.7 budget</td><td>${(sim / 16.7 * 100).toFixed(1)}%</td></tr>` +
+    `<tr><td>fps</td><td>${(1000 / perf.frame).toFixed(0)}</td></tr>`;
+
+  const cnt = new Int32Array(A), avg = new Float32Array(K), perType = new Int32Array(T);
+  for (let i = 0; i < N; i++) {
+    cnt[action[i]]++; perType[type[i]]++;
+    for (let k = 0; k < K; k++) avg[k] += needs[i * K + k];
+  }
+  let h = '<thead><tr><th>action</th><th>agents</th><th>using</th><th>crowding</th><th>need</th><th>avg</th></tr></thead>';
+  for (let a = 0; a < A; a++) {
+    h += `<tr><td><span class="sw" style="background:var(${ACTION_VARS[a]})"></span>${ACTION_NAMES[a]}</td><td>${cnt[a]}</td>` +
+      (a < K ? `<td>${users[a]}</td><td>${(saturation[a] * 100).toFixed(0)}%</td><td>${NEEDS[a].name}</td><td>${(avg[a] / N).toFixed(2)}</td>`
+             : '<td></td><td></td><td></td><td></td>') + '</tr>';
+  }
+  popEl.innerHTML = h;
+
+  let ty = '<thead><tr><th>type</th><th>agents</th><th>speed</th><th style="text-align:left">differences</th></tr></thead>';
+  TYPES.forEach((t, k) => {
+    ty += `<tr><td>${t.name}</td><td>${perType[k]}</td><td>×${t.speed}</td><td style="text-align:left;white-space:normal">${describe(t)}</td></tr>`;
+  });
+  typesEl.innerHTML = ty;
+
+  let m = '<thead><tr><th></th>' + ACTION_NAMES.map(n => `<th>${n}</th>`).join('') + '</tr></thead>';
+  for (let f = 0; f < F; f++) {
+    m += `<tr><td>${FEATURE_NAMES[f]}</td>`;
+    for (let a = 0; a < A; a++) { const v = M[showType * MA + f * A + a]; m += `<td>${v === 0 ? '·' : v.toFixed(2)}</td>`; }
+    m += '</tr>';
+  }
+  matEl.innerHTML = m;
+}
+
+// ───────────────────────── main loop ─────────────────────────
+let last = performance.now(), frames = 0;
+function frame(now) {
+  ema('frame', now - last); last = now;
+
+  if (dirty) {
+    const t = performance.now();
+    buildFields(); drawTiles(); dirty = false;
+    perf.fields = performance.now() - t;
+  }
+
+  let tD = 0, tM = 0, tX = 0;
+  for (let s = 0; s < speed; s++) {
+    let t0 = performance.now();
+    if (tick % MATRIX_EVERY === 0) rebuildMatrix();
+    let t1 = performance.now();
+    stepDecide();
+    let t2 = performance.now();
+    stepMove();
+    let t3 = performance.now();
+    tX += t1 - t0; tD += t2 - t1; tM += t3 - t2;
+    tick++;
+  }
+  if (speed > 0) { ema('matrix', tX); ema('decide', tD); ema('move', tM); }
+
+  const r0 = performance.now();
+  render();
+  ema('render', performance.now() - r0);
+
+  if (frames++ % 15 === 0) updatePanels();
+  requestAnimationFrame(frame);
+}
+
+// Headless benchmark, callable from the console: bench(1000, 2000) → ms per tick
+window.bench = (n, ticks) => {
+  for (let i = N; i < n; i++) spawn(i);
+  N = n; nSlider.value = n; nLabel.textContent = n;
+  const out = { agents: n, ticks, decide: 0, move: 0, matrix: 0 };
+  for (let s = 0; s < ticks; s++) {
+    const t0 = performance.now();
+    if (tick % MATRIX_EVERY === 0) rebuildMatrix();
+    const t1 = performance.now(); stepDecide();
+    const t2 = performance.now(); stepMove();
+    const t3 = performance.now();
+    out.matrix += t1 - t0; out.decide += t2 - t1; out.move += t3 - t2; tick++;
+  }
+  const saved = [cam.x, cam.y, cam.zoom];
+  const time = fn => { const t = performance.now(); for (let k = 0; k < 20; k++) fn(); return (performance.now() - t) / 20; };
+  const glFrame = () => { renderGL(); glr.gl.finish(); };          // finish() waits for the GPU, so its time is counted
+  cam.x = ISO_W / 2; cam.y = ISO_H / 2; cam.zoom = FIT_ZOOM;      // whole map on screen = worst case
+  out.renderFlat = time(renderFlat);
+  out.renderIso2d = time(renderIso);
+  if (glr) { out.renderGL = time(glFrame); cam.zoom = 2; out.renderGLZoom = time(glFrame); }
+  out.render = glr ? out.renderGL : out.renderIso2d;
+  [cam.x, cam.y, cam.zoom] = saved;
+  out.decide /= ticks; out.move /= ticks; out.matrix /= ticks;
+  out.simTotal = out.decide + out.move + out.matrix;
+  const mode = freeMove;
+  const timeMode = free => {
+    setMove(free);
+    const t = performance.now();
+    for (let s = 0; s < ticks; s++) { if (tick % MATRIX_EVERY === 0) rebuildMatrix(); stepDecide(); stepMove(); tick++; }
+    return (performance.now() - t) / ticks;
+  };
+  out.simGrid = timeMode(false); out.simFree = timeMode(true);
+  setMove(mode);
+  return out;
+};
+
+// On-page benchmark so it can be run on a phone, where there is no console.
+const benchBtn = document.getElementById('benchBtn'), benchOut = document.getElementById('benchOut');
+benchBtn.onclick = async () => {
+  const runs = [[1000, 1000], [5000, 400], [20000, 150]];
+  const startN = N, wait = ms => new Promise(r => setTimeout(r, ms));
+  const f = (v, d) => v === undefined ? '–' : v.toFixed(d);
+  let rows = '<thead><tr><th>agents</th><th>sim grid</th><th>sim free</th><th>top-down</th><th>iso 2D</th><th>WebGL</th><th>WebGL 2×</th><th>sim + draw, % of 16.7</th><th>live fps</th></tr></thead>';
+  benchBtn.disabled = true; benchBtn.textContent = 'running…';
+  for (const [n, ticks] of runs) {
+    await wait(50);                               // let the page repaint between runs
+    const o = bench(n, ticks);
+    const f0 = frames, t0 = performance.now();    // then let it run for real and count frames
+    await wait(1500);
+    const fps = (frames - f0) / (performance.now() - t0) * 1000;
+    rows += `<tr><td>${o.agents}</td><td>${f(o.simGrid, 3)}</td><td>${f(o.simFree, 3)}</td><td>${f(o.renderFlat, 2)}</td><td>${f(o.renderIso2d, 2)}</td>` +
+      `<td>${f(o.renderGL, 2)}</td><td>${f(o.renderGLZoom, 2)}</td><td>${((o.simTotal + o.render) / 16.7 * 100).toFixed(1)}%</td><td>${fps.toFixed(0)}</td></tr>`;
+    benchOut.innerHTML = rows;
+  }
+  N = startN; nSlider.value = startN; nLabel.textContent = startN;
+  benchBtn.disabled = false; benchBtn.textContent = 'run benchmark';
+};
+
+const retheme = () => { loadPalette(); buildSprites(); drawTiles(); };
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', retheme);
+new MutationObserver(retheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+buildMap(); buildFields(); buildSprites(); drawTiles(); setView('iso'); setMove(true);
+for (let i = 0; i < N; i++) spawn(i);
+rebuildMatrix();
+requestAnimationFrame(frame);
+</script>

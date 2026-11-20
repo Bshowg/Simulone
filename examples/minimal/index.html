@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minimal engine test</title>
+<style>
+  body { margin: 0; padding: 12px; background: #f4f2ea; color: #1c1f17; font: 13px/1.4 ui-monospace, Consolas, monospace; }
+  canvas { width: 100%; max-width: 768px; display: block; border: 1px solid #1c1f17; image-rendering: pixelated; }
+</style>
+<canvas id="cv" width="768" height="512"></canvas>
+<p id="out"></p>
+<script type="module">
+import { createGame } from '../../engine/index.js';
+
+// The smallest useful game: two needs, houses, a canteen that needs staff and holds 8 customers, no art.
+const game = createGame({
+  canvas: document.getElementById('cv'),
+  agents: 60,
+  prefabs: [
+    { name: 'house',   w: 3, h: 3, beds: 6, color: '#b9bfa6' },
+    { name: 'canteen', w: 4, h: 4, jobs: 3, capacity: 8, color: '#e6cf8f' },
+  ],
+  map: {
+    width: 40, height: 30,
+    build(w) {
+      for (let k = 0; k < 8; k++) w.place('house', 4 + (k % 4) * 4, 4 + ((k / 4) | 0) * 4);   // 48 beds for 60 agents
+      w.place('canteen', 28, 18);
+    },
+  },
+  needs: [
+    { name: 'hunger', grow: 0.0008 },
+    { name: 'fatigue', grow: 0.0005 },
+  ],
+  actions: [
+    { name: 'eat', at: 'canteen', effects: { hunger: -0.010 } },
+    { name: 'sleep', at: '@home', effects: { fatigue: -0.006 } },
+    { name: 'sleep rough', onlyIf: 'homeless', effects: { fatigue: -0.0015 } },
+    { name: 'work', at: '@job', duration: 300 },
+  ],
+  onFrame(g) {
+    const s = g.sim;
+    document.getElementById('out').textContent =
+      `${s.count} agents | housed ${s.housed} | employed ${s.employed}/${s.workforce} | ` +
+      `sim ${g.stats.simMs.toFixed(3)} ms | draw ${g.stats.renderMs.toFixed(3)} ms | ${g.stats.fps.toFixed(0)} fps`;
+  },
+});
+game.tool = (x, y, phase) => { if (phase === 'down') game.place('house', x, y); };   // tap to add a house
+window.game = game;   // poke at it from the console
+</script>

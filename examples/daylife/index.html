@@ -1,0 +1,216 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Town Day Cycle</title>
+<style>
+  body { margin: 0; padding-block: 12px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+         background: #f4f2ea; color: #1c1f17; font: 13px/1.4 ui-monospace, Consolas, monospace; }
+  main { max-width: 768px; margin: 0 auto; }
+  canvas { width: 100%; display: block; border: 1px solid #1c1f17; image-rendering: pixelated; transition: filter 1s linear; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+  button { font: inherit; padding: 8px 10px; border: 1px solid #1c1f17; background: transparent; color: #1c1f17; cursor: pointer; }
+  button.on { background: #1c1f17; color: #f4f2ea; }
+  button small { opacity: .7; }
+  [hidden] { display: none !important; }
+  .sw { display: inline-block; width: 9px; height: 9px; margin-right: 4px; border: 1px solid #1c1f17; }
+  #clock { font-size: 18px; min-width: 9.5em; font-variant-numeric: tabular-nums; }
+  #phase, #buildNote, .dim { color: #6f6a4f; }
+  table { border-collapse: collapse; font: inherit; font-variant-numeric: tabular-nums; }
+  td, th { text-align: right; padding: 1px 10px 1px 0; font-weight: normal; white-space: nowrap; }
+  th { color: #6f6a4f; border-bottom: 1px solid #cfcab6; }
+  td:first-child, th:first-child { text-align: left; }
+  .tables { display: flex; flex-wrap: wrap; gap: 8px 28px; }
+  .scroll { overflow-x: auto; }
+  #people b { font-weight: normal; background: #1c1f17; color: #f4f2ea; padding: 0 4px; }
+  #events { list-style: none; margin: 0; padding: 0; }
+  #events li { padding: 1px 0; }
+  #events time { color: #6f6a4f; margin-right: 8px; }
+  h2 { font-size: 12px; font-weight: normal; color: #6f6a4f; text-transform: uppercase; letter-spacing: .04em; margin: 14px 0 4px; }
+</style>
+<main>
+  <canvas id="cv" width="768" height="512"></canvas>
+  <div class="row"><span id="clock"></span><span id="phase"></span><span id="speeds" style="margin-left:auto"></span></div>
+  <div class="row"><button id="buildBtn">build mode</button><span id="buildNote"></span></div>
+  <div class="row" id="tools" hidden></div>
+  <p id="stores"></p>
+  <p id="people"></p>
+  <p id="lives"></p>
+  <div class="tables">
+    <div class="scroll"><table id="doing"></table></div>
+    <div class="scroll"><table id="bld"></table></div>
+  </div>
+  <h2>Recent events</h2>
+  <ul id="events"><li class="dim">nothing yet</li></ul>
+  <h2>Pace and lives, as set in town.js (rules in modules/lives.js)</h2>
+  <div class="scroll"><table id="pace"></table></div>
+</main>
+<script type="module">
+import { createGame } from '../../engine/index.js';
+import * as town from './town.js';
+
+// All pacing comes from town.js. This page only draws the game and shows what is going on.
+const cv = document.getElementById('cv');
+const events = [];                                               // newest first
+const stamp = () => { const h = town.hourOfDay(game.sim.tick); return `Day ${town.dayNumber(game.sim.tick)} ${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 60)).padStart(2, '0')}`; };
+const ageOf = i => `${(game.sim.age[i] / town.DAY).toFixed(0)} days old`;
+const CAUSE = { 'old age': 'died of old age', left: 'gave up and left town', exposure: 'died sleeping in the open', dirty: 'died of disease' };
+function note(text) { events.unshift([stamp(), text]); if (events.length > 8) events.pop(); eventsDirty = true; }
+let eventsDirty = false;
+const lives = town.lives;                                        // this game's own rules and per-person values (see modules/lives.js)
+let economy = null;                                              // the generic economy module, fed by town.js (set once the game exists)
+lives.onEvent = (kind, i, detail) => {
+  const stage = game.sim.types[game.sim.type[i]].stage;
+  if (kind === 'born') note(`a child was born (${detail.residents} now live in that house)`);
+  else note(`${/^[aeiou]/.test(stage) ? 'an' : 'a'} ${stage}, ${ageOf(i)}, ${CAUSE[detail] ?? 'died of ' + detail}`);
+};
+const game = createGame(town.makeConfig({ canvas: cv, onFrame: updateUI }));
+economy = town.economy;
+const { sim, world } = game;
+window.game = game;                                              // poke at it from the console
+
+// ── controls
+function group(el, items, isOn, pick) {
+  const btns = [];
+  for (const [label, value] of items) {
+    const b = document.createElement('button');
+    b.innerHTML = label; b.className = isOn(value) ? 'on' : '';
+    b.onclick = () => { pick(value); for (const x of btns) x.className = ''; b.className = 'on'; };
+    btns.push(b); el.append(b, ' ');
+  }
+}
+group(document.getElementById('speeds'), [['pause', 0], ['1×', 1], ['2×', 2], ['4×', 4], ['8×', 8], ['16×', 16], ['32×', 32]], s => s === game.speed, s => { game.speed = s; });
+
+let buildOn = false, toolChoice = null, lineStart = null, routesSince = 0, rotation = 'auto';
+const buildBtn = document.getElementById('buildBtn'), buildNote = document.getElementById('buildNote'), toolsEl = document.getElementById('tools');
+function applyTool() {
+  const v = toolChoice;
+  game.preview = [];
+  if (!buildOn || v === null) game.tool = null;                  // outside build mode a drag always pans
+  else if (v === '!') game.tool = (x, y, phase) => { if (phase === 'down' || phase === 'drag') game.demolish(x, y); };
+  else if (v === 'street') game.tool = (x, y, phase) => {        // straight line from where the finger lands to where it lifts
+    if (phase === 'down') lineStart = [x, y];
+    if (phase === 'cancel' || !lineStart) { lineStart = null; game.preview = []; return; }
+    if (phase === 'up') { game.line('street', lineStart[0], lineStart[1], x, y); lineStart = null; game.preview = []; }
+    else game.preview = world.lineCells(lineStart[0], lineStart[1], x, y).filter(([i, j]) => world.inside(i, j) && world.get(i, j) === 0);
+  };
+  else game.tool = (x, y, phase) => {                            // drag to position the footprint, lift to place it
+    if (phase === 'up') {                                        // building costs the town what the prefab says
+      game.preview = [];
+      const why = game.canBuild(v);                              // the economy module answers: can the town pay?
+      if (why !== true) buildNote.textContent = `cannot build a ${v}: ${why || 'not allowed'}`;
+      else if (game.place(v, x, y, rotation)) buildNote.textContent = `built a ${v} for ${costText(v) || 'nothing'}`;   // placing it charges the town
+    }
+    else game.preview = phase === 'cancel' ? [] : game.footprint(v, x, y, rotation);
+  };
+}
+buildBtn.onclick = () => {
+  buildOn = !buildOn;
+  buildBtn.className = buildOn ? 'on' : ''; buildBtn.textContent = buildOn ? 'done building' : 'build mode';
+  toolsEl.hidden = !buildOn;
+  if (buildOn) { game.beginBuild(); applyTool(); buildNote.textContent = 'time is stopped while you build'; }
+  else { game.tool = null; game.endBuild(); buildNote.textContent = 'routes updating…'; routesSince = performance.now(); }
+};
+const costText = name => Object.entries(economy.costOf(name)).map(([r, n]) => `${n} ${r}`).join(', ');
+const label = p => `<span class="sw" style="background:${p.color}"></span>${p.name} <small>${p.beds ? p.beds + ' beds' : p.jobs + ' jobs'}${p.capacity ? ', holds ' + p.capacity : ''}${costText(p.name) ? ' · ' + costText(p.name) : ''}</small>`;
+group(toolsEl, [['move view', null], ['<span class="sw" style="background:#cdc6b0"></span>street', 'street'], ...world.prefabs.map(p => [label(p), p.name]), ['demolish', '!']],
+  v => v === toolChoice, v => { toolChoice = v; applyTool(); });
+const ROTS = ['auto', 0, 1, 2, 3], ROT_NAMES = { auto: 'door: to street', 0: 'door: as drawn', 1: 'door: turned 90°', 2: 'door: turned 180°', 3: 'door: turned 270°' };
+const rotBtn = document.createElement('button');
+rotBtn.textContent = ROT_NAMES[rotation];
+rotBtn.onclick = () => { rotation = ROTS[(ROTS.indexOf(rotation) + 1) % ROTS.length]; rotBtn.textContent = ROT_NAMES[rotation]; };
+toolsEl.append(rotBtn);
+
+// ── the pace table: the definitions, turned back into words, so what is on screen can be checked against them
+{
+  const mins = t => { const m = t / town.HOUR * 60; return m >= 36 * 60 ? `${+(m / 1440).toFixed(1)} days` : m >= 90 ? `${+(m / 60).toFixed(1)} h` : `${Math.round(m)} min`; };
+  const rows = [
+    ['one game hour', `${town.REAL_SECONDS_PER_HOUR} real seconds`], ['one game day', `${(town.DAY / town.TICKS_PER_SECOND / 60).toFixed(0)} real minutes`],
+    ['a typical life', `${(town.LIFESPAN / town.DAY).toFixed(0)} days (${(town.LIFESPAN / town.TICKS_PER_SECOND / 3600).toFixed(1)} real hours at 1×), give or take ${town.LIFESPAN_SPREAD * 100}%`],
+    ...town.AGES.map(a => [`at ${(a.age / town.DAY).toFixed(0)} days (${a.name})`, `walks ${a.walk} cells per second${a.works ? ', can work' : ', does not work'}`]),
+    ['children', `a household with two people aged ${(town.FAMILY.from / town.DAY).toFixed(0)}-${(town.FAMILY.to / town.DAY).toFixed(0)} days and a free bed: ${town.FAMILY.chancePerNight * 100}% chance each night`],
+    ['leaving town', `after ${mins(town.EMIGRATION.after)} with a desperate need or no home: ${town.EMIGRATION.chancePerDay * 100}% chance each day`],
+    ...town.NEEDS.map(n => [`${n.name} becomes desperate after`, `${mins(n.fullAfter)}${n.kills ? `; fatal after ${mins(n.kills)} more` : '; never fatal'}`]),
+    ['health recovers in', mins(town.RECOVERY)],
+    ...Object.entries(town.RESOURCES).map(([r, d]) => [`${r}`, `${d.people ? 'held by people' + (d.pooled ? ' (shared per household)' : '') + ' and the town' : 'held by the town'}; starts at ${d.start?.town ?? 0}${d.start?.person ? ` plus ${d.start.person} each` : ''}`]),
+    ['a work shift pays', Object.entries(town.WAGE).map(([r, n]) => `${n} ${r}`).join(', ')],
+    ['a night in a bed costs', Object.entries(town.RENT).map(([r, n]) => `${n} ${r}`).join(', ') + ' (if they have it)'],
+    ...town.BUILDINGS.filter(b => b.makes).map(b => [`a shift at a ${b.name} makes`, Object.entries(b.makes).map(([r, n]) => `${n} ${r}`).join(', ')]),
+    ...town.BUILDINGS.filter(b => b.serves && (b.serves.uses || b.serves.price)).map(b => [`${b.serves.action} at a ${b.name}`,
+      [b.serves.uses && 'uses ' + Object.entries(b.serves.uses).map(([r, n]) => `${n} ${r}`).join(', '),
+       b.serves.price && 'costs ' + Object.entries(b.serves.price).map(([r, n]) => `${n} ${r}`).join(', ') + (b.serves.mustPay ? ' (no entry without it)' : ' (free for the penniless)')].filter(Boolean).join('; ')]),
+    ...town.BUILDINGS.filter(b => b.serves).map(b => [`${b.serves.action} at a ${b.name} takes`, mins(b.serves.takes)]),
+    ['a night in bed takes', mins(town.SLEEP_TAKES)], ['the same rest on the ground takes', mins(town.ROUGH_SLEEP_TAKES)], ['a work shift lasts', mins(town.WORK_SHIFT)],
+  ];
+  document.getElementById('pace').innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td style="text-align:left">${v}</td></tr>`).join('');
+}
+
+// ── readouts
+const clockEl = document.getElementById('clock'), phaseEl = document.getElementById('phase');
+let frames = 0, lastDim = -1, rateFrom = { day: 0, totals: {} };
+function updateUI(g) {
+  if (routesSince && !g.routesBusy) { buildNote.textContent = `routes updated ${((performance.now() - routesSince) / 1000).toFixed(1)} s after building`; routesSince = 0; }
+  if (frames++ % 10) return;
+  const h = town.hourOfDay(sim.tick), night = town.nightness(h);
+  clockEl.textContent = `Day ${town.dayNumber(sim.tick)} · ${String(Math.floor(h)).padStart(2, '0')}:${String(Math.floor((h % 1) * 6) * 10).padStart(2, '0')}`;
+  phaseEl.textContent = night > 0.99 ? 'night' : night > 0.01 ? (h < 12 ? 'dawn' : 'dusk') : town.workday(h) > 0.5 ? 'working hours' : h < 12 ? 'morning' : 'evening';
+  const dim = Math.round(night * 10);                            // night is shown by dimming the whole view
+  if (dim !== lastDim) { lastDim = dim; cv.style.filter = `brightness(${(1 - 0.42 * night).toFixed(2)}) saturate(${(1 - 0.35 * night).toFixed(2)})`; }
+  if (eventsDirty) {
+    eventsDirty = false;
+    document.getElementById('events').innerHTML = events.map(([when, text]) => `<li><time>${when}</time>${text}</li>`).join('');
+  }
+  if (frames % 30 !== 1) return;                                 // the tables change slowly: redraw them about twice a second
+
+  // the economy: what the town has, what households have, and how fast each store is moving
+  {
+    const dayNow = sim.tick / town.DAY, span = Math.max(0.02, dayNow - rateFrom.day);
+    const parts = Object.keys(economy.town).map(r => {
+      const t = economy.totals[r], was = rateFrom.totals[r] ?? { made: 0, used: 0 };
+      const made = (t.made - was.made) / span, used = (t.used - was.used) / span;
+      const flow = made || used ? ` <span class="dim">(+${made.toFixed(0)} −${used.toFixed(0)} a day)</span>` : '';
+      const low = economy.town[r] < 1 ? ' <b>none left</b>' : '';
+      return `${r}: town ${economy.town[r].toFixed(0)}${economy.pockets[r] ? `, households ${economy.held(r).toFixed(0)}` : ''}${flow}${low}`;
+    });
+    document.getElementById('stores').innerHTML = parts.join(' · ');
+    if (span >= 1) rateFrom = { day: dayNow, totals: JSON.parse(JSON.stringify(economy.totals)) };   // rates are over the last day or so
+  }
+  let queue = 0, barred = 0;
+  const cnt = new Int32Array(sim.A), avg = new Float32Array(sim.K);
+  for (let i = 0; i < sim.count; i++) {
+    cnt[sim.action[i]]++; if (sim.wait[i] > 0) queue++; if (sim.deny[i]) barred++;
+    for (let k = 0; k < sim.K; k++) avg[k] += sim.needsOf[i * sim.K + k];
+  }
+  const homeless = sim.count - sim.housed, jobless = sim.workforce - sim.employed;
+  document.getElementById('people').innerHTML =
+    `${sim.count} people · housed ${sim.housed}${homeless ? ` <b>${homeless} homeless</b>` : ''} · ` +
+    `employed ${sim.employed}/${sim.workforce}${jobless ? ` <b>${jobless} jobless</b>` : ''}${queue ? ` · <b>${queue} queueing</b>` : ''}${barred ? ` · <b>${barred} cannot afford something</b>` : ''}`;
+  // lives: who is alive, how they are, and what has happened so far
+  const stages = {}; let age = 0, health = 0, mood = 0, unwell = 0, atRisk = 0;
+  for (let i = 0; i < sim.count; i++) {
+    const st = sim.types[sim.type[i]].stage; stages[st] = (stages[st] ?? 0) + 1;
+    age += sim.age[i]; health += lives.health[i]; mood += lives.mood[i];
+    if (lives.health[i] < 0.5) unwell++; if (lives.unhappy[i] > town.EMIGRATION.after / 2) atRisk++;
+  }
+  const L = lives.stats, died = Object.entries(L.deaths), n = Math.max(1, sim.count);
+  document.getElementById('lives').innerHTML =
+    `${Object.entries(stages).map(([k, v]) => `${v} ${k}`).join(', ')} · average age ${(age / n / town.DAY).toFixed(0)} days · ` +
+    `health ${(health / n * 100).toFixed(0)}%${unwell ? ` <b>${unwell} unwell</b>` : ''} · mood ${(mood / n * 100).toFixed(0)}%${atRisk ? ` <b>${atRisk} thinking of leaving</b>` : ''}<br>` +
+    `<span class="dim">so far:</span> ${L.births} born · ${died.reduce((x, [, v]) => x + v, 0)} died` +
+    `${died.length ? ' (' + died.map(([k, v]) => `${v} ${k === 'dirty' ? 'disease' : k}`).join(', ') + ')' : ''} · ${L.left} left · ${L.moves} moved house`;
+  let t = '<tr><th>doing</th><th>people</th><th>need</th><th>average</th></tr>';
+  sim.actions.forEach((a, ai) => {
+    const k = sim.until[ai];
+    t += `<tr><td><span class="sw" style="background:${a.color}"></span>${a.name}</td><td>${cnt[ai]}</td><td>${k >= 0 ? sim.needs[k].name : ''}</td><td>${k >= 0 ? (avg[k] / sim.count).toFixed(2) : ''}</td></tr>`;
+  });
+  document.getElementById('doing').innerHTML = t;
+  const by = new Map();
+  for (const b of world.buildings) if (b) {
+    const r = by.get(b.name) ?? { n: 0, open: 0, inside: 0, room: 0 };
+    r.n++; r.open += b.open ? 1 : 0; r.inside += b.inside; r.room += b.cap + b.beds + b.jobs;
+    by.set(b.name, r);
+  }
+  let u = '<tr><th>building</th><th>count</th><th>open</th><th>people inside</th></tr>';
+  for (const [name, r] of by) u += `<tr><td>${name}</td><td>${r.n}</td><td>${r.open}</td><td>${r.inside}/${r.room}</td></tr>`;
+  document.getElementById('bld').innerHTML = u;
+}
+</script>

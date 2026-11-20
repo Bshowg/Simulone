@@ -1,0 +1,12 @@
+{
+  "name": "agent-matrix-engine",
+  "version": "0.3.0",
+  "description": "Many simple autonomous agents driven by per-type action matrices, free movement on a grid world, isometric WebGL2 sprites.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./world.js": "./world.js",
+    "./sim.js": "./sim.js"
+  }
+}

@@ -1,6 +1,6 @@
-# Contributing to GAME_B
+# Contributing to Simulone
 
-Thanks for helping. GAME_B is a set of phone web games built on one engine, Simulone. This page is how we work together
+Thanks for helping. Simulone is a set of phone web games built on one engine of the same name. This page is how we work together
 so that four games, a shared engine and several people (and their Claude sessions) don't step on each other.
 `README.md` has the layout and the commands; `CLAUDE.md` holds the same rules for Claude Code.
 

@@ -1,6 +1,6 @@
 # Atrium (working title): game design document
 
-A shopping-mall management game for phones (web). The second full game on the GAME_B engine, after The Lord's Will
+A shopping-mall management game for phones (web). The second full game on the Simulone engine, after The Lord's Will
 (`docs/GDD.md`). It must be a game of its own: its own mechanics and its own new modules, not The Lord's Will with
 new names.
 

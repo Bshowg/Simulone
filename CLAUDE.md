@@ -1,6 +1,6 @@
-# Working on GAME_B (for Claude Code)
+# Working on Simulone (for Claude Code)
 
-GAME_B is a set of phone web games on one generic engine, Simulone. Read `README.md` for the layout and the commands,
+Simulone is a set of phone web games on one generic engine of the same name. Read `README.md` for the layout and the commands,
 `CONTRIBUTING.md` for how the team works, and the README in each folder you touch (`engine/`, `kit/`, `modules/`,
 `games/<game>/modules/`, `tools/tests/`, `art/*/STYLE.md`). Several people work here, each with their own Claude
 sessions: these rules are what keeps the code coherent between them.

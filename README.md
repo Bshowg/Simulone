@@ -1,4 +1,4 @@
-# GAME_B
+# Simulone
 
 Phone games built on one engine, **Simulone**: many simple people (or ants, or soldiers) who look after their own needs,
 and a player who shapes the place they live in. Four games so far: **The Lord's Will** (a medieval settlement),

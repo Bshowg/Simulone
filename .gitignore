@@ -17,5 +17,11 @@ desktop.ini
 # Claude Code: personal settings stay local (.claude/launch.json, the preview server list, is shared)
 .claude/settings.local.json
 
+# Contact sheets the art scripts write on every run, to look at what was drawn: remade by running the script again
+# (art/shots/ is kept: those are pictures of the games)
+art/colony/shots/
+art/war/shots/
+art/out/preview/
+
 # Aseprite's own backups
 *.aseprite~

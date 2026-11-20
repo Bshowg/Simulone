@@ -8,7 +8,7 @@ All art is drawn by Lua scripts run in Aseprite batch mode, using the shared lib
 **A pen-and-wash drawing on paper.** Brown ink line, with thin, realistic pastel washes: each thing has the colour it
 really has, thinned with water. Nothing is saturated and nothing is black.
 
-- Reference image (approved by the owner): `art/proposals/round7/pastel-full-fixed.png`. Reference buildings drawn with
+- Reference image (approved by the owner): `art/reference/lords-will.png`. Reference buildings drawn with
   the library: `art/buildings/hut.lua`, `art/buildings/well.lua` (previews in `art/out/preview/`).
 - **Line:** every separate part gets a brown ink outline (the library does this). Detail inside a surface is drawn with
   short pen strokes and small patterns (courses of stone, strokes of thatch, boards), never with gradients.

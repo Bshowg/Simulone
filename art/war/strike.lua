@@ -1,5 +1,5 @@
 -- WAR, proposal B (Chronicle) with fighting animated: four frames for a blow and two for taking one, for every kind and
--- both realms, seen from the front and from behind. Writes into art/war/proposals/:
+-- both realms, seen from the front and from behind. Writes into art/war/shots/:
 --   B-strike-sheet.png  every kind and realm: front (standing, blow 1-4, struck 1-2) and back (blow 1-4, struck 1-2); 3x
 --   B-duel.gif          a swordsman of the March and a spearman of the Crown trading blows, 5x
 --   B-melee.gif         two front ranks fighting, at the scale of the battle view, 3x
@@ -37,7 +37,7 @@ for k, kind in ipairs(KINDS) do for side = 0, 1 do
   local y = 2 + ((k - 1) * 2 + side) * py
   for c, col in ipairs(cols) do W.blit(sheet, img(kind, side, col[1], col[2]), 2 + (c - 1) * px + (c > 7 and 8 or 0), y) end
 end end
-W.save(W.scale(sheet, 3), 'art/war/proposals/B-strike-sheet.png')
+W.save(W.scale(sheet, 3), 'art/war/shots/strike-sheet.png')
 
 -- ───────────────────────── animations ─────────────────────────
 local function gif(frames, path, dur)
@@ -67,10 +67,10 @@ do                                                                    -- the due
     frames[#frames + 1] = W.scale(im, 5)
     small[#small + 1] = im
   end
-  gif(frames, 'art/war/proposals/B-duel.gif', 0.13)
+  gif(frames, 'art/war/shots/duel.gif', 0.13)
   local strip = W.image(6 * 58, 2 * 42)                              -- the same twelve frames side by side, for a page
   for i, im in ipairs(small) do W.blit(strip, im, ((i - 1) % 6) * 58, ((i - 1) // 6) * 42) end
-  W.save(W.scale(strip, 4), 'art/war/proposals/B-duel-strip.png')
+  W.save(W.scale(strip, 4), 'art/war/shots/duel-strip.png')
 end
 do                                                                    -- two front ranks, each pair at its own moment in the exchange
   local cw, ch = 14, 14
@@ -93,6 +93,6 @@ do                                                                    -- two fro
     W.blit(crop, scene, -((scene.width - 150) // 2), -36)
     frames[#frames + 1] = W.scale(crop, 3)
   end
-  gif(frames, 'art/war/proposals/B-melee.gif', 0.12)
+  gif(frames, 'art/war/shots/melee.gif', 0.12)
 end
 print('ok strike')

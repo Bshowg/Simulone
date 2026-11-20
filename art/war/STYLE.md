@@ -1,6 +1,6 @@
 # WAR: art style and sprite contract
 
-The look chosen by the owner: **Chronicle** (proposal B in `art/war/proposals/`), with the fighting animated.
+The look chosen by the owner: **Chronicle** (proposal B of three; the approved pictures are `art/reference/war-battle.png` and `art/reference/war-figures.png`), with the fighting animated.
 
 ## The look
 
@@ -41,7 +41,7 @@ hill, stream, ford, road, field).
   "/c/Program Files/Aseprite/Aseprite.exe" -b --script-param root="$(pwd -W)" --script art/war/sheet.lua
   ```
 
-- `proposals.lua` and `strike.lua` draw the proposal sheets, scenes and loops in `proposals/`.
+- `strike.lua` draws the blow and the hit as a sheet and as looping GIFs in `shots/`, to judge the animation by eye.
 
 The game plays a blow as: wind-up while the man's next blow is a few ticks off and an enemy is in reach, then strike,
 follow-through and recovery over the ticks after it lands; struck 1 and 2 over the ticks after he is hit

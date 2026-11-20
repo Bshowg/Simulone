@@ -383,7 +383,7 @@ Not in step 1, though the GDD names them for the hamlet: mud in spring, a part r
 
 ### Art (pen and wash)
 
-- **Style, chosen after seven rounds of proposals:** a brown ink line with thin, realistic pastel washes on paper; people shaped as in the owner's reference (small head, block body, limbs one pixel wide) in plain clothes. The style sheet is `art/STYLE.md`; the approved picture is `art/proposals/round7/pastel-full-fixed.png`.
+- **Style, chosen after seven rounds of proposals:** a brown ink line with thin, realistic pastel washes on paper; people shaped as in the owner's reference (small head, block body, limbs one pixel wide) in plain clothes. The style sheet is `art/STYLE.md`; the approved picture is `art/reference/lords-will.png`.
 - **How it is made:** every drawing is a Lua script run in Aseprite batch mode on the shared library `art/lib/ink.lua`. A building is described once and drawn in the four rotations. `tools/pack-art.py` packs `art/out/` into `games/lords-will/art.png` and `art-atlas.js`, and makes the faded "closed" version of each building.
 - **Drawn:** all 18 buildings (the three open places included), 24 figures with walking, field work and standing poses, four trees in four seasons, 23 ground textures (grass and forest floor per season, water, ice, ford, road, five crop states).
 - **Engine, generic:** ground textures by key, several sprites for one tile with a small shift per cell, a `look` per person and separate frames for walking and doing.

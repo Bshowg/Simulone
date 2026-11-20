@@ -8,8 +8,8 @@ An ant nest cut through and seen from the side, in **low resolution, drawn as tr
 
 Approved pictures, to match:
 
-- Ground: `art/proposals/colony2/2-soil-12px.png` (made by `art/proposals/colony2.lua`, style 1 at 12 pixels a cell).
-- Ants: row **A** of `art/proposals/ants/ants-large.png` (made by `art/proposals/ants.lua`): the garden ant, seen from the side, near-black with one touch of light on the abdomen.
+- Ground: `art/reference/colony-ground.png` (style 1 of the second round of proposals, at 12 pixels a cell).
+- Ants: row **A** of `art/reference/colony-ants.png`: the garden ant, seen from the side, near-black with one touch of light on the abdomen.
 
 Look at both pictures first. The two scripts are the reference for how each thing was drawn; reuse their approach.
 

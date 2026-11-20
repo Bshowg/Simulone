@@ -1,7 +1,7 @@
--- WAR's figures and ground, shared by the art scripts in art/war/ (proposals.lua, strike.lua). Load it with:
+-- WAR's figures and ground, shared by the art scripts in art/war/ (sheet.lua, strike.lua). Load it with:
 --   local F = dofile(app.params.root .. '/art/war/lib/figures.lua')
--- A figure is a grid of letters, one per material; a style turns the letters into pixels (render). See proposals.lua
--- for what each style is.
+-- A figure is a grid of letters, one per material; a style turns the letters into pixels (render). The game uses the
+-- Chronicle style (art/war/STYLE.md); the others are kept from the proposals it was chosen among.
 local W = dofile(app.params.root .. '/art/war/lib/wpx.lua')
 local KINDS = { 'levy', 'spear', 'sword', 'archer', 'rider' }
 

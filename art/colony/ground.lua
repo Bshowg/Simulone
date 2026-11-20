@@ -1,5 +1,5 @@
 -- The Colony: the ground. Soil textures, pebbles, grass, roots, skies and water, drawn to match the approved
--- picture art/proposals/colony2/2-soil-12px.png (style 1 of art/proposals/colony2.lua at 12 pixels a cell).
+-- picture art/reference/colony-ground.png (style 1 of the second round of proposals, at 12 pixels a cell).
 --   Aseprite -b --script-param root=<project folder> --script art/colony/ground.lua
 local px = dofile(app.params.root .. '/art/colony/lib/px.lua')
 local pc = app.pixelColor

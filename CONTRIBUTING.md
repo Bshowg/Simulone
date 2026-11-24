@@ -54,5 +54,14 @@ the pull request and let them review it. Changes to shared code are reviewed by 
 
 ## Publishing
 
-`dist/` is build output and is not in git. The published Simulone page is the project owner's: send your change as a
-pull request, and the owner builds and publishes it.
+`dist/` is build output and is not in git. Publishing is the project owner's: send your change as a pull request, and
+the owner publishes it.
+
+**On the website** (gianmarcobiscini.it/static/simulone/): publishing a **release** on GitHub does it. The workflow
+`.github/workflows/publish-website.yml` tests every game, builds Simulone and copies the build into the website's
+repository at `static/simulone/`; the website's own deploy then uploads it. A failed test stops it before anything is
+copied. It can also be run by hand from the Actions tab.
+
+It needs one repository secret, `GB_WEBSITE_TOKEN`: a fine-grained personal access token of the website's owner, for
+the `gb-website` repository only, with **Contents: read and write** and nothing else, and an expiry date. Anyone with
+write access here can run workflows that use it, so keep it that narrow, and replace it when it expires.

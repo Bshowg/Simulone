@@ -1,0 +1,72 @@
+# Publish Simulone on the website (gianmarcobiscini.it/static/simulone/) when a release is published.
+#
+# It tests every game, builds the Simulone menu with all its games, and copies the build into the website's
+# repository (Bshowg/gb-website) at static/simulone/. Pushing there starts the website's own deploy, which uploads it.
+#
+# Needs one secret in this repository: GB_WEBSITE_TOKEN, a fine-grained personal access token that may write the
+# contents of Bshowg/gb-website and nothing else (see CONTRIBUTING.md, "Publishing").
+# It can also be run by hand from the Actions tab ("Run workflow").
+
+name: Publish on the website
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-website
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Test, build and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Get Simulone
+        uses: actions/checkout@v4
+
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Test every game
+        run: python tools/test-all.py
+
+      - name: Build Simulone
+        run: python tools/build-simulone.py
+
+      - name: Get the website
+        uses: actions/checkout@v4
+        with:
+          repository: Bshowg/gb-website
+          token: ${{ secrets.GB_WEBSITE_TOKEN }}
+          path: site
+
+      - name: Put the build in static/simulone
+        run: |
+          mkdir -p site/static/simulone
+          rsync -a --delete --exclude manifest.json dist/simulone/ site/static/simulone/
+
+      - name: Push to the website
+        env:
+          VERSION: ${{ github.event.release.tag_name || github.sha }}
+        run: |
+          cd site
+          git config user.name "Bshowg"
+          git config user.email "5948374+Bshowg@users.noreply.github.com"
+          git add static/simulone
+          if git diff --cached --quiet; then
+            echo "Nothing changed: the website already has this build."
+            exit 0
+          fi
+          git commit -m "Simulone ${VERSION}"
+          git push

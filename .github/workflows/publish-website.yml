@@ -1,7 +1,8 @@
 # Publish Simulone on the website (gianmarcobiscini.it/static/simulone/) when a release is published.
 #
 # It tests every game, builds the Simulone menu with all its games, and copies the build into the website's
-# repository (Bshowg/gb-website) at static/simulone/. Pushing there starts the website's own deploy, which uploads it.
+# repository (Bshowg/gb-website) at static/simulone/, adding a "Simulone" link to the site's header the first time.
+# Pushing there starts the website's own deploy, which uploads it.
 #
 # Needs one secret in this repository: GB_WEBSITE_TOKEN, a fine-grained personal access token that may write the
 # contents of Bshowg/gb-website and nothing else (see CONTRIBUTING.md, "Publishing").
@@ -56,6 +57,16 @@ jobs:
           mkdir -p site/static/simulone
           rsync -a --delete --exclude manifest.json dist/simulone/ site/static/simulone/
 
+      - name: Link it from the website's header
+        # Once only: a "Simulone" link after "Ludoteca" in the header every page of the site uses. It arrives in the same
+        # push as the build, so the site never links to a page that is not there.
+        run: |
+          cd site
+          if ! grep -q '/static/simulone/' components/header.html; then
+            sed -i '/href="\/static\/games\/index.html"/a\                <li><a href="/static/simulone/index.html" class="hover:underline text-white text-xl font-semibold">Simulone</a></li>' components/header.html
+            grep -q '/static/simulone/' components/header.html || { echo "Could not add the header link: the Ludoteca line was not found."; exit 1; }
+          fi
+
       - name: Push to the website
         env:
           VERSION: ${{ github.event.release.tag_name || github.sha }}
@@ -63,7 +74,7 @@ jobs:
           cd site
           git config user.name "Bshowg"
           git config user.email "5948374+Bshowg@users.noreply.github.com"
-          git add static/simulone
+          git add static/simulone components/header.html
           if git diff --cached --quiet; then
             echo "Nothing changed: the website already has this build."
             exit 0
